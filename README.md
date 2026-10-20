@@ -89,6 +89,35 @@ pwsh -NoProfile -File .\scripts\install-broker-task.ps1 -StartNow
 pwsh -NoProfile -File .\scripts\9router-inventory.ps1 -ShowNames
 ```
 
+## Standalone launcher
+
+Build a single Windows executable that embeds the PowerShell scripts and
+dashboard assets:
+
+```powershell
+pwsh -NoProfile -File .\packaging\build-vpncheap.ps1
+```
+
+The output is `dist\vpncheap.exe`. It works from CMD, PowerShell, and Git Bash,
+and accepts ordinary command-line arguments:
+
+```text
+vpncheap.exe restart
+vpncheap.exe status
+vpncheap.exe dashboard start
+vpncheap.exe task remove
+vpncheap.exe 9router inventory -ShowNames
+vpncheap.exe run broker.ps1 -Action status
+```
+
+When the executable is inside the repository, it uses the repository scripts
+and `runtime` directory. When copied elsewhere, it extracts its embedded scripts
+to `%LOCALAPPDATA%\VPNCheapMultiExit` and keeps runtime state there. Set
+`VPNCHEAP_HOME` to choose another state directory.
+
+The host still needs PowerShell 7 and the installed VPNCheap application.
+9Router commands additionally need the local 9Router installation.
+
 The dashboard listens on `http://127.0.0.1:39080/`. Open "配置出口" to change the
 number of parallel exits or select exact nodes. The page writes only
 `runtime/exit-config.json`; the running broker hot-loads it within a few seconds.

@@ -5,3 +5,4 @@ secrets/
 *.log
 *.tmp
 .codex-tmp/
+dist/
