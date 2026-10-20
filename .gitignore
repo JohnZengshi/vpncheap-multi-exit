@@ -1,0 +1,6 @@
+artifacts/
+logs/
+runtime/
+secrets/
+*.log
+*.tmp

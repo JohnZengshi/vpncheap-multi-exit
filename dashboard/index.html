@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Exit Control · VPNCheap 多出口</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <defs>
+      <symbol id="i-waypoints" viewBox="0 0 24 24">
+        <circle cx="12" cy="4.5" r="2.5"/><path d="m10.2 6.3-3.9 3.9"/>
+        <circle cx="4.5" cy="12" r="2.5"/><path d="M7 12h10"/>
+        <circle cx="19.5" cy="12" r="2.5"/><path d="m13.8 17.7 3.9-3.9"/>
+        <circle cx="12" cy="19.5" r="2.5"/>
+      </symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24">
+        <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+        <path d="M21 3v5h-5"/>
+        <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+        <path d="M3 21v-5h5"/>
+      </symbol>
+      <symbol id="i-external" viewBox="0 0 24 24">
+        <path d="M15 3h6v6"/><path d="M10 14 21 3"/>
+        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+      </symbol>
+      <symbol id="i-server" viewBox="0 0 24 24">
+        <rect width="20" height="8" x="2" y="2" rx="2"/>
+        <rect width="20" height="8" x="2" y="14" rx="2"/>
+        <path d="M6 6h.01"/><path d="M6 18h.01"/>
+      </symbol>
+      <symbol id="i-shield" viewBox="0 0 24 24">
+        <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>
+        <path d="m9 12 2 2 4-4"/>
+      </symbol>
+      <symbol id="i-network" viewBox="0 0 24 24">
+        <rect x="16" y="16" width="6" height="6" rx="1"/>
+        <rect x="2" y="16" width="6" height="6" rx="1"/>
+        <rect x="9" y="2" width="6" height="6" rx="1"/>
+        <path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/>
+        <path d="M12 12V8"/>
+      </symbol>
+      <symbol id="i-search" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+      </symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+      </symbol>
+      <symbol id="i-cpu" viewBox="0 0 24 24">
+        <rect x="4" y="4" width="16" height="16" rx="2"/>
+        <rect x="9" y="9" width="6" height="6"/>
+        <path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/>
+        <path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/>
+        <path d="M9 2v2"/><path d="M9 20v2"/>
+      </symbol>
+      <symbol id="i-database" viewBox="0 0 24 24">
+        <ellipse cx="12" cy="5" rx="9" ry="3"/>
+        <path d="M3 5v14a9 3 0 0 0 18 0V5"/>
+        <path d="M3 12a9 3 0 0 0 18 0"/>
+      </symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24">
+        <rect width="14" height="14" x="8" y="8" rx="2" ry="2"/>
+        <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>
+      </symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24">
+        <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/>
+        <path d="M12 9v4"/><path d="M12 17h.01"/>
+      </symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+      <symbol id="i-terminal" viewBox="0 0 24 24">
+        <polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>
+      </symbol>
+      <symbol id="i-route" viewBox="0 0 24 24">
+        <circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/>
+        <circle cx="18" cy="5" r="3"/>
+      </symbol>
+      <symbol id="i-layers" viewBox="0 0 24 24">
+        <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/>
+        <path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/>
+        <path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>
+      </symbol>
+      <symbol id="i-sliders" viewBox="0 0 24 24">
+        <line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/>
+        <line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/>
+        <line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/>
+        <line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/>
+        <line x1="16" x2="16" y1="18" y2="22"/>
+      </symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+      <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+    </defs>
+  </svg>
+
+  <header class="topbar">
+    <div class="topbar-inner wrap">
+      <a class="brand" href="/">
+        <span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-waypoints"/></svg></span>
+        <span class="brand-text">
+          <span class="brand-title">Exit Control</span>
+          <span class="brand-sub">VPNCheap 多出口</span>
+        </span>
+      </a>
+
+      <div class="broker-pill is-idle" id="broker-pill">
+        <span class="pill-dot"></span>
+        <span id="broker-pill-text">连接中</span>
+      </div>
+
+      <div class="topbar-meta">
+        <span id="updated-at">等待数据</span>
+      </div>
+
+      <div class="topbar-actions">
+        <label class="switch" for="auto-refresh">
+          <input type="checkbox" id="auto-refresh">
+          <span class="switch-track"><span class="switch-knob"></span></span>
+          <span class="switch-label">自动刷新</span>
+        </label>
+        <button class="icon-btn" id="refresh-btn" type="button" title="立即刷新" aria-label="立即刷新">
+          <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>
+        </button>
+        <a class="link-btn" href="http://localhost:20128/dashboard/proxy-pools" target="_blank" rel="noreferrer">
+          <svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg>
+          <span>代理池</span>
+        </a>
+        <a class="link-btn" href="http://localhost:20128/dashboard/providers" target="_blank" rel="noreferrer">
+          <svg class="icon" aria-hidden="true"><use href="#i-route"/></svg>
+          <span>Providers</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="band warning-band" id="warning-band" hidden>
+      <div class="wrap warning-inner">
+        <svg class="icon warning-icon" aria-hidden="true"><use href="#i-alert"/></svg>
+        <div class="warning-chips" id="warning-chips"></div>
+      </div>
+    </section>
+
+    <section class="band stats-band">
+      <div class="wrap">
+        <div class="stat-strip">
+          <div class="stat">
+            <span class="stat-label">健康出口</span>
+            <span class="stat-value" id="stat-healthy">—</span>
+            <span class="stat-meta" id="stat-healthy-meta">读取中</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">平均延迟</span>
+            <span class="stat-value" id="stat-latency">—</span>
+            <span class="stat-meta" id="stat-latency-meta">近期检查</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">代理池</span>
+            <span class="stat-value" id="stat-pools">—</span>
+            <span class="stat-meta" id="stat-pools-meta">本工具托管</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">候选节点</span>
+            <span class="stat-value" id="stat-candidates">—</span>
+            <span class="stat-meta" id="stat-candidates-meta">节点目录</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">运行时长</span>
+            <span class="stat-value" id="stat-uptime">—</span>
+            <span class="stat-meta" id="stat-uptime-meta">Broker</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="section-title">
+            <h2>出口节点</h2>
+            <p id="exit-subtitle">本地回环入口 · 等待快照</p>
+          </div>
+          <div class="controls">
+            <button class="link-btn" id="config-btn" type="button">
+              <svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>
+              <span>配置出口</span>
+            </button>
+            <div class="segmented" role="group" aria-label="出口筛选">
+              <button class="seg-btn is-active" type="button" data-filter="all" aria-pressed="true">
+                全部<span class="seg-count" id="count-all">0</span>
+              </button>
+              <button class="seg-btn" type="button" data-filter="healthy" aria-pressed="false">
+                健康<span class="seg-count" id="count-healthy">0</span>
+              </button>
+              <button class="seg-btn" type="button" data-filter="bad" aria-pressed="false">
+                异常<span class="seg-count" id="count-bad">0</span>
+              </button>
+            </div>
+            <label class="search" for="exit-search">
+              <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+              <input type="search" id="exit-search" placeholder="节点、地区、端口" autocomplete="off">
+            </label>
+          </div>
+        </div>
+
+        <div class="panel table-panel">
+          <div class="table-scroll">
+            <table class="exit-table" aria-label="出口节点状态">
+              <thead>
+                <tr>
+                  <th scope="col">节点</th>
+                  <th scope="col">入口</th>
+                  <th scope="col">地区 / 协议</th>
+                  <th scope="col">状态</th>
+                  <th scope="col">HTTP</th>
+                  <th scope="col">延迟</th>
+                  <th scope="col">出口 IP 哈希</th>
+                  <th scope="col">Worker</th>
+                  <th scope="col">最近检查</th>
+                </tr>
+              </thead>
+              <tbody id="exit-body"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="exit-empty" hidden>
+            <svg class="icon empty-icon" aria-hidden="true"><use href="#i-server"/></svg>
+            <span id="exit-empty-text">暂无出口节点</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band">
+      <div class="wrap lower-grid">
+        <section class="panel stack-panel">
+          <header class="panel-head">
+            <div class="section-title">
+              <h3>9Router 代理池</h3>
+              <p id="pool-subtitle">读取中</p>
+            </div>
+            <div class="head-actions">
+              <button class="link-btn" id="pool-create-all" type="button" hidden>
+                <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+                <span id="pool-create-all-label">创建代理池</span>
+              </button>
+              <a class="icon-btn" href="http://localhost:20128/dashboard/proxy-pools" target="_blank" rel="noreferrer" title="打开代理池" aria-label="打开代理池">
+                <svg class="icon" aria-hidden="true"><use href="#i-external"/></svg>
+              </a>
+            </div>
+          </header>
+          <div class="rows" id="pool-list"></div>
+          <div class="empty small" id="pool-empty" hidden>
+            <svg class="icon empty-icon" aria-hidden="true"><use href="#i-database"/></svg>
+            <span>没有代理池数据</span>
+          </div>
+        </section>
+
+        <section class="panel stack-panel">
+          <header class="panel-head">
+            <div class="section-title">
+              <h3>Provider 路由</h3>
+              <p id="connection-subtitle">读取中</p>
+            </div>
+            <a class="icon-btn" href="http://localhost:20128/dashboard/providers" target="_blank" rel="noreferrer" title="打开 Providers" aria-label="打开 Providers">
+              <svg class="icon" aria-hidden="true"><use href="#i-external"/></svg>
+            </a>
+          </header>
+          <div class="rows" id="connection-list"></div>
+          <div class="empty small" id="connection-empty" hidden>
+            <svg class="icon empty-icon" aria-hidden="true"><use href="#i-route"/></svg>
+            <span>没有 Provider 数据</span>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section class="band last-band">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="section-title">
+            <h2>运行链路</h2>
+            <p>计划任务 → Broker → Worker → sing-box → 本地入口</p>
+          </div>
+        </div>
+
+        <div class="panel runtime-panel">
+          <div class="flow" id="flow"></div>
+          <div class="proc-grid" id="proc-grid"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <span>本地控制面 · 节点地址、密码与令牌不会出现在此页面</span>
+      <span class="mono" id="footer-endpoint">127.0.0.1:39080</span>
+    </div>
+  </footer>
+
+  <dialog class="config-dialog" id="exit-config-dialog" aria-labelledby="config-title">
+    <form class="config-card" id="exit-config-form" novalidate>
+      <header class="config-head">
+        <div class="section-title">
+          <h2 id="config-title">出口配置</h2>
+          <p id="config-subtitle">读取中</p>
+        </div>
+        <button class="icon-btn" id="config-close" type="button" title="关闭" aria-label="关闭">
+          <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+        </button>
+      </header>
+
+      <div class="config-body">
+        <div class="config-field">
+          <label for="exit-count">并行出口</label>
+          <div class="stepper">
+            <button class="step-btn" id="exit-minus" type="button" title="减少" aria-label="减少">
+              <svg class="icon" aria-hidden="true"><use href="#i-minus"/></svg>
+            </button>
+            <input id="exit-count" type="number" min="1" max="64" step="1" inputmode="numeric" aria-label="并行出口数量">
+            <button class="step-btn" id="exit-plus" type="button" title="增加" aria-label="增加">
+              <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <label class="switch config-auto" for="auto-select">
+          <input type="checkbox" id="auto-select">
+          <span class="switch-track"><span class="switch-knob"></span></span>
+          <span class="switch-label">自动选取</span>
+        </label>
+
+        <div class="candidate-toolbar">
+          <label class="search candidate-search" for="candidate-search">
+            <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+            <input type="search" id="candidate-search" placeholder="节点、地区、协议" autocomplete="off">
+          </label>
+          <span class="candidate-summary" id="candidate-summary">0 个候选</span>
+        </div>
+
+        <div class="candidate-list" id="candidate-list" role="list" aria-label="候选出口节点"></div>
+        <p class="config-error" id="config-error" role="alert" hidden></p>
+      </div>
+
+      <footer class="config-foot">
+        <button class="link-btn" id="config-cancel" type="button">取消</button>
+        <button class="primary-btn" id="config-save" type="submit">应用</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <textarea class="clip-helper" id="clip-helper" readonly tabindex="-1" aria-hidden="true"></textarea>
+
+  <script src="/app.js"></script>
+</body>
+</html>
