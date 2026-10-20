@@ -4,3 +4,4 @@ runtime/
 secrets/
 *.log
 *.tmp
+.codex-tmp/
