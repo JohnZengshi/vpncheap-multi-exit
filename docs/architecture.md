@@ -84,9 +84,16 @@ Use a deterministic local range:
 39001..39999 -> VPNCheap exits
 ```
 
-Each node maps to a stable port only while it is healthy. If a node is replaced,
-allocate a fresh port rather than immediately reusing a hot port. This prevents
-9Router from sending traffic to the wrong pool during a replacement.
+Each node hash retains its persisted port lease across health failures,
+worker restarts, and deselection/reselection. New nodes receive unused ports.
+If an existing lease is occupied, report `port-conflict` and retry that same
+port after 15 seconds; never silently retire and reassign a published endpoint.
+
+The `run` entry point holds an exclusive `runtime/broker.lock` file handle
+before cleaning up orphan workers or reading/writing runtime state. Scheduled
+and manual launches share this lock. A duplicate launch exits without touching
+the active broker. The file remains on disk; ownership is determined by the
+open handle, which the OS releases when the process exits.
 
 Before publishing a port to 9Router, check that:
 
@@ -148,7 +155,7 @@ Failure backoff:
 - first failure: retry after a short delay;
 - repeated failure: quarantine the node;
 - config failure: do not retry until the catalog changes;
-- port bind failure: move to the next free port;
+- port contention: retain the lease and retry the same port;
 - native crash: restart only that worker.
 
 Observed failure classes on this host:

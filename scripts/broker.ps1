@@ -410,6 +410,34 @@ function Stop-WorkerEntry {
     Write-BrokerLog -Message ("worker-stop node={0} port={1}" -f $nodeHash, $Worker.Port)
 }
 
+function Start-LeasedWorker {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Exit,
+        [Parameter(Mandatory = $true)]
+        [int]$Port,
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Workers,
+        [Parameter(Mandatory = $true)]
+        [hashtable]$PendingRestarts,
+        [int]$RestartCount = 0
+    )
+
+    $hash = [string]$Exit.NodeHash
+    if (Test-TcpPortListening -Port $Port) {
+        $PendingRestarts[$hash] = [pscustomobject]@{
+            DueAt = (Get-Date).AddSeconds(15)
+            RestartCount = $RestartCount
+            Port = $Port
+            Reason = 'port-conflict'
+        }
+        Write-BrokerLog -Message ("port-conflict node={0} port={1} retryIn=15s" -f $hash, $Port)
+        return
+    }
+
+    $Workers[$hash] = Start-WorkerEntry -Exit $Exit -Port $Port -RestartCount $RestartCount
+}
+
 function Stop-AllWorkerEntries {
     param(
         [Parameter(Mandatory = $true)]
@@ -466,10 +494,13 @@ function Stop-AllWorkerEntries {
 }
 
 function Stop-OrphanWorkers {
+    $fileArgument = '(?:^|\s)"?-File"?\s+(?:"{0}"|{0})(?=\s|$)' -f [regex]::Escape($workerScript)
+    $runtimeArgument = '(?:^|\s)"?-RuntimeDirectory"?\s+(?:"{0}"|{0})(?=\s|$)' -f [regex]::Escape($RuntimeDirectory)
     $workers = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
         $_.ProcessId -ne $PID -and
         -not [string]::IsNullOrWhiteSpace([string]$_.CommandLine) -and
-        [string]$_.CommandLine -like "*$workerScript*"
+        [string]$_.CommandLine -match $fileArgument -and
+        [string]$_.CommandLine -match $runtimeArgument
     }
 
     foreach ($worker in @($workers)) {
@@ -542,7 +573,13 @@ function Write-BrokerStatus {
         }
 
         $rowState = if ($null -ne $workerStatus) { [string]$workerStatus.state } else { 'starting' }
-        $healthOk = if ($null -ne $workerStatus) { [bool]$workerStatus.healthOk } else { $false }
+        $healthOk = $null -ne $workerEntry -and $processState -eq 'running' -and
+            $null -ne $workerStatus -and $workerStatus.workerPid -eq $workerPid -and
+            [bool]$workerStatus.healthOk
+        if ($PendingRestarts.ContainsKey($hash)) {
+            $reason = [string](Get-OptionalProperty -Object $PendingRestarts[$hash] -Name 'Reason')
+            $rowState = if ($reason -eq 'port-conflict') { 'port-conflict' } else { 'restarting' }
+        }
         if ($healthOk -and $rowState -eq 'healthy') {
             $healthyCount++
         }
@@ -557,6 +594,9 @@ function Write-BrokerStatus {
             }
             elseif ($null -ne $workerEntry) {
                 $workerEntry.Port
+            }
+            elseif ($PendingRestarts.ContainsKey($hash)) {
+                Get-OptionalProperty -Object $PendingRestarts[$hash] -Name 'Port'
             }
             else {
                 $null
@@ -641,6 +681,28 @@ function Write-BrokerStatus {
 
 function Invoke-BrokerRun {
     Ensure-RuntimeDirectories
+    $lockPath = Join-Path $RuntimeDirectory 'broker.lock'
+    try {
+        $runLock = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::OpenOrCreate,
+            [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    }
+    catch [System.IO.IOException] {
+        if (($_.Exception.HResult -band 0xffff) -notin @(32, 33)) { throw }
+        Write-Output 'Broker already running for this runtime; duplicate run skipped.'
+        return
+    }
+
+    try {
+        Invoke-BrokerRunCore
+    }
+    finally {
+        # Keep the lock file: deleting it after release races the next owner.
+        $runLock.Dispose()
+    }
+}
+
+function Invoke-BrokerRunCore {
+    Ensure-RuntimeDirectories
     Stop-OrphanWorkers
 
     if (Test-Path -LiteralPath $supervisorStopPath) {
@@ -691,7 +753,7 @@ function Invoke-BrokerRun {
     try {
         foreach ($exit in $desired) {
             $hash = [string]$exit.NodeHash
-            $workers[$hash] = Start-WorkerEntry -Exit $exit -Port $leases[$hash]
+            Start-LeasedWorker -Exit $exit -Port $leases[$hash] -Workers $workers -PendingRestarts $pendingRestarts
         }
 
         while ($true) {
@@ -804,6 +866,7 @@ function Invoke-BrokerRun {
                         $pendingRestarts[$hash] = [pscustomobject]@{
                             DueAt = (Get-Date).AddSeconds($delay)
                             RestartCount = $restartCount
+                            Port = $worker.Port
                         }
                         Write-BrokerLog -Message ("worker-exit node={0} restartIn={1}s count={2}" -f $hash, $delay, $restartCount)
                     }
@@ -826,31 +889,14 @@ function Invoke-BrokerRun {
                 }
 
                 $port = [int]$leases[$hash]
-                if (Test-TcpPortListening -Port $port) {
-                    $retired.Add($port)
-                    $leases.Remove($hash)
-                    $port = Get-FreePort -Leases $leases -Retired $retired
-                    $leases[$hash] = $port
-                    Save-LeaseState -Leases $leases -Retired $retired
-                    Write-BrokerLog -Message ("port-reassign node={0} port={1}" -f $hash, $port)
-                }
-
-                $workers[$hash] = Start-WorkerEntry -Exit $exit -Port $port -RestartCount $pending.RestartCount
+                Start-LeasedWorker -Exit $exit -Port $port -Workers $workers -PendingRestarts $pendingRestarts -RestartCount $pending.RestartCount
             }
 
             foreach ($exit in $desired) {
                 $hash = [string]$exit.NodeHash
                 if (-not $workers.ContainsKey($hash) -and -not $pendingRestarts.ContainsKey($hash)) {
                     $port = [int]$leases[$hash]
-                    if (Test-TcpPortListening -Port $port) {
-                        $retired.Add($port)
-                        $leases.Remove($hash)
-                        $port = Get-FreePort -Leases $leases -Retired $retired
-                        $leases[$hash] = $port
-                        Save-LeaseState -Leases $leases -Retired $retired
-                        Write-BrokerLog -Message ("port-reassign node={0} port={1}" -f $hash, $port)
-                    }
-                    $workers[$hash] = Start-WorkerEntry -Exit $exit -Port $port
+                    Start-LeasedWorker -Exit $exit -Port $port -Workers $workers -PendingRestarts $pendingRestarts
                 }
             }
 
@@ -948,6 +994,11 @@ function Start-BrokerBackground {
             return
         }
         if ($process.HasExited) {
+            if ($process.ExitCode -eq 0 -and $null -ne $record -and
+                (Test-ProcessAlive -ProcessId $record.pid)) {
+                Write-Output ("Broker already running. pid={0}" -f $record.pid)
+                return
+            }
             throw "Broker process exited during startup with code $($process.ExitCode). Check $brokerLogPath"
         }
         Start-Sleep -Milliseconds 300

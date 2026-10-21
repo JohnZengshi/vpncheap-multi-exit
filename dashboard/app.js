@@ -11,6 +11,8 @@ const STATE_LABELS = {
   starting: '启动中',
   stopped: '已停止',
   quarantined: '已隔离',
+  'port-conflict': '端口被占用',
+  restarting: '等待重启',
   running: '运行中',
   pending: '等待中'
 };
@@ -19,6 +21,7 @@ const PROCESS_LABELS = {
   running: '运行中',
   starting: '启动中',
   exited: '已退出',
+  'restart-pending': '等待重试',
   stopped: '已停止'
 };
 
