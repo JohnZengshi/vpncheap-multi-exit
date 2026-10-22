@@ -9,6 +9,10 @@
 - Logs must be redacted by default.
 - The scripts in this repository hash node IDs, exit IPs, and native errors by
   default.
+- The Dashboard keeps the latest plaintext exit IP in each worker status file so
+  the explicit "Export IP" action can return it. The normal snapshot remains
+  hash-only, and the export endpoint requires the same-origin `X-Exit-Control`
+  header.
 - A crash dump or verbose sing-box log may contain node credentials. Protect
   local artifacts accordingly.
 

@@ -51,6 +51,7 @@ const ui = {
   filter: 'all',
   poolBusy: false,
   poolPending: new Set(),
+  exportBusy: false,
   query: '',
   auto: readAutoPreference(),
   history: new Map(),
@@ -350,6 +351,96 @@ function copyButton(text, label) {
     copyText(text, '已复制');
   });
   return button;
+}
+
+function csvCell(value) {
+  let text = value === undefined || value === null ? '' : String(value);
+  if (/^[=+\-@\t\r]/.test(text)) {
+    text = `'${text}`;
+  }
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function fileTimestamp(date) {
+  const pad = (value) => String(value).padStart(2, '0');
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    '-',
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds())
+  ].join('');
+}
+
+async function exportExitIps() {
+  if (ui.exportBusy) {
+    return;
+  }
+
+  const button = byId('export-ips-btn');
+  const label = byId('export-ips-label');
+  ui.exportBusy = true;
+  button.disabled = true;
+  button.setAttribute('aria-busy', 'true');
+  label.textContent = '导出中';
+
+  try {
+    const response = await fetch('/api/exit-ip-export', {
+      cache: 'no-store',
+      headers: {
+        'X-Exit-Control': '1'
+      }
+    });
+    let result = null;
+    try {
+      result = await response.json();
+    } catch (error) {
+      result = null;
+    }
+    if (!response.ok) {
+      throw new Error(result && result.error === 'broker-status-missing'
+        ? 'Broker 尚未发布出口状态'
+        : `导出失败（HTTP ${response.status}）`);
+    }
+
+    const rows = result && Array.isArray(result.exits) ? result.exits : [];
+    if (!rows.length) {
+      throw new Error('没有可导出的出口节点');
+    }
+
+    const header = ['节点', '地区', '协议', '本地入口', '状态', '真实出口 IP', '最近检查'];
+    const lines = rows.map((exit) => [
+      exit.nodeName || '',
+      exit.country || '',
+      exit.protocol || '',
+      exit.port ? `127.0.0.1:${exit.port}` : '',
+      exit.healthOk ? '健康' : '异常',
+      exit.exitIp || '',
+      exit.lastCheckAt || ''
+    ].map(csvCell).join(','));
+    const csv = `\uFEFF${header.map(csvCell).join(',')}\r\n${lines.join('\r\n')}\r\n`;
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `vpncheap-exit-ips-${fileTimestamp(new Date())}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+
+    const ipCount = rows.filter((exit) => exit.exitIp).length;
+    showToast(`已导出 ${rows.length} 个节点，${ipCount} 个包含真实 IP`);
+  } catch (error) {
+    showToast(error && error.message ? error.message : '导出失败');
+  } finally {
+    ui.exportBusy = false;
+    button.disabled = false;
+    button.removeAttribute('aria-busy');
+    label.textContent = '导出 IP';
+  }
 }
 
 function poolPlanByPort() {
@@ -1235,6 +1326,7 @@ function bind() {
   });
 
   byId('config-btn').addEventListener('click', openConfigDialog);
+  byId('export-ips-btn').addEventListener('click', exportExitIps);
   byId('pool-create-all').addEventListener('click', () => createPools(creatablePorts()));
   byId('config-close').addEventListener('click', closeConfigDialog);
   byId('config-cancel').addEventListener('click', closeConfigDialog);

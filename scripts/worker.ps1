@@ -67,6 +67,7 @@ $script:status = [ordered]@{
     healthOk = $false
     httpStatus = $null
     latencyMs = $null
+    exitIp = $null
     exitIpHash = $null
     lastCheckAt = $null
     lastHealthyAt = $null
@@ -242,6 +243,7 @@ try {
                 healthOk = $true
                 httpStatus = $health.StatusCode
                 latencyMs = $health.LatencyMs
+                exitIp = $health.ExitIp
                 exitIpHash = $health.ExitIpHash
                 lastCheckAt = $now
                 lastHealthyAt = $now
@@ -255,6 +257,7 @@ try {
                 healthOk = $false
                 httpStatus = $health.StatusCode
                 latencyMs = $health.LatencyMs
+                exitIp = $health.ExitIp
                 exitIpHash = $health.ExitIpHash
                 lastCheckAt = $now
                 consecutiveFailures = $failures

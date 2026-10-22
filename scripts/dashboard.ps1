@@ -278,6 +278,40 @@ function Get-DashboardSnapshot {
     }
 }
 
+function Get-DashboardExitIpExport {
+    $status = Read-JsonFile -Path $statusPath
+    if ($null -eq $status) {
+        throw 'broker-status-missing'
+    }
+
+    $rows = @(Get-OptionalProperty -Object $status -Name 'exits' | Where-Object { $null -ne $_ } | ForEach-Object {
+        $nodeHash = [string](Get-OptionalProperty -Object $_ -Name 'nodeHash')
+        $workerPath = Join-Path $runtimeDirectory ('workers\{0}.json' -f $nodeHash)
+        $worker = Read-JsonFile -Path $workerPath
+        $workerPid = Get-OptionalProperty -Object $_ -Name 'workerPid'
+        $workerStatusPid = Get-OptionalProperty -Object $worker -Name 'workerPid'
+        $workerIsCurrent = $null -ne $worker -and [string]$workerStatusPid -eq [string]$workerPid
+        $workerHealthy = $workerIsCurrent -and [bool](Get-OptionalProperty -Object $worker -Name 'healthOk')
+
+        [ordered]@{
+            nodeName = [string](Get-OptionalProperty -Object $_ -Name 'nodeName')
+            nodeHash = $nodeHash
+            port = [int](Get-OptionalProperty -Object $_ -Name 'port')
+            country = [string](Get-OptionalProperty -Object $_ -Name 'country')
+            protocol = [string](Get-OptionalProperty -Object $_ -Name 'protocol')
+            state = [string](Get-OptionalProperty -Object $_ -Name 'state')
+            healthOk = [bool](Get-OptionalProperty -Object $_ -Name 'healthOk')
+            exitIp = if ($workerHealthy) { [string](Get-OptionalProperty -Object $worker -Name 'exitIp') } else { '' }
+            lastCheckAt = Get-OptionalProperty -Object $worker -Name 'lastCheckAt'
+        }
+    })
+
+    return [ordered]@{
+        generatedAt = (Get-Date).ToUniversalTime().ToString('o')
+        exits = $rows
+    }
+}
+
 function Send-DashboardResponse {
     param(
         [Parameter(Mandatory = $true)]
@@ -439,6 +473,21 @@ function Invoke-DashboardRequest {
             return
         }
 
+        if ($path -eq '/api/exit-ip-export') {
+            if (-not (Test-DashboardControlRequest -Stream $stream -Method $method -Headers $headers -AllowedMethod 'GET' -RequireJson $false)) {
+                return
+            }
+            try {
+                $payload = Get-DashboardExitIpExport
+            }
+            catch {
+                Send-DashboardJson -Stream $stream -StatusCode 409 -Value @{ error = 'broker-status-missing' }
+                return
+            }
+            Send-DashboardJson -Stream $stream -StatusCode 200 -Value $payload
+            return
+        }
+
         if ($path -eq '/api/exit-config') {
             if ($method -ne 'POST') {
                 Send-DashboardResponse -Stream $stream -StatusCode 405 -ContentType 'text/plain; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('Method not allowed'))
@@ -546,7 +595,7 @@ function Invoke-DashboardRequest {
         }
 
         if ($path -eq '/api/nine-router/pools') {
-            if (-not (Test-DashboardWriteRequest -Stream $stream -Method $method -Headers $headers)) {
+            if (-not (Test-DashboardControlRequest -Stream $stream -Method $method -Headers $headers -AllowedMethod 'POST')) {
                 return
             }
             try {

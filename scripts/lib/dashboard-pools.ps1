@@ -11,14 +11,16 @@ function Send-DashboardJson {
     Send-DashboardResponse -Stream $Stream -StatusCode $StatusCode -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($json))
 }
 
-function Test-DashboardWriteRequest {
+function Test-DashboardControlRequest {
     param(
         [Parameter(Mandatory = $true)] [System.Net.Sockets.NetworkStream]$Stream,
         [Parameter(Mandatory = $true)] [string]$Method,
-        [Parameter(Mandatory = $true)] [hashtable]$Headers
+        [Parameter(Mandatory = $true)] [hashtable]$Headers,
+        [ValidateSet('GET', 'POST')] [string]$AllowedMethod = 'POST',
+        [bool]$RequireJson = $true
     )
 
-    if ($Method -ne 'POST') {
+    if ($Method -ne $AllowedMethod) {
         Send-DashboardResponse -Stream $Stream -StatusCode 405 -ContentType 'text/plain; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('Method not allowed'))
         return $false
     }
@@ -39,8 +41,9 @@ function Test-DashboardWriteRequest {
     if ($Headers.ContainsKey('x-exit-control')) { $controlHeader = [string]$Headers['x-exit-control'] }
     $contentType = ''
     if ($Headers.ContainsKey('content-type')) { $contentType = [string]$Headers['content-type'] }
-    if ($controlHeader -ne '1' -or -not $contentType.StartsWith('application/json', [System.StringComparison]::OrdinalIgnoreCase)) {
-        Send-DashboardResponse -Stream $Stream -StatusCode 403 -ContentType 'text/plain; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('Write request rejected'))
+    $validContentType = -not $RequireJson -or $contentType.StartsWith('application/json', [System.StringComparison]::OrdinalIgnoreCase)
+    if ($controlHeader -ne '1' -or -not $validContentType) {
+        Send-DashboardResponse -Stream $Stream -StatusCode 403 -ContentType 'text/plain; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('Control request rejected'))
         return $false
     }
 

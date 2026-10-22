@@ -113,6 +113,8 @@ vpncheap.exe run broker.ps1 -Action status
 
 Dashboard 监听 `http://127.0.0.1:39080/`。打开“配置出口”可修改并行出口数量或选择
 具体节点。页面只写入 `runtime/exit-config.json`，运行中的 Broker 会在几秒内热加载。
+“导出 IP”会下载当前出口节点与最近一次健康检查所得真实出口 IP 的 CSV；普通状态快照
+仍然只包含出口 IP 哈希。
 端口租约会绑定到节点哈希，因此取消勾选后再次勾选同一节点，仍会回到原来的回环端口，
 并保留已有的 9Router 代理池绑定。
 
