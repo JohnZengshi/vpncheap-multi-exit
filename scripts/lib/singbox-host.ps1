@@ -226,6 +226,7 @@ function Invoke-CurlCapture {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
         [string[]]$Arguments
     )
 
@@ -254,37 +255,44 @@ function Test-ProxyExitHealth {
         [int]$TimeoutSec = 20
     )
 
-    $healthArgs = @(
-        '-sS',
-        '-o', 'NUL',
-        '-w', '%{http_code}|%{time_total}',
-        '--max-time', [string]$TimeoutSec,
-        '-x', "http://127.0.0.1:$Port",
-        'https://cp.cloudflare.com/generate_204'
-    )
-    $health = Invoke-CurlCapture -Arguments $healthArgs
+    # Split the health budget so a failed primary cannot starve the fallback.
+    $probeBudget = [Math]::Max(0.5, [Math]::Min(8, $TimeoutSec / 2.0))
+    $probeTimeout = $probeBudget.ToString('0.###', [Globalization.CultureInfo]::InvariantCulture)
+    $proxyArgs = @('-q', '-sS', '--noproxy', '', '-x', "http://127.0.0.1:$Port")
     $statusCode = ''
     $elapsedSeconds = ''
-    $match = [regex]::Match($health.Output, '(?m)(\d{3})\|([0-9.]+)\s*$')
-    if ($match.Success) {
-        $statusCode = $match.Groups[1].Value
-        $elapsedSeconds = $match.Groups[2].Value
+    $healthOk = $false
+    $healthTarget = $null
+    foreach ($endpoint in @('https://cp.cloudflare.com/generate_204', 'https://www.gstatic.com/generate_204')) {
+        $healthArgs = $proxyArgs + @('-o', 'NUL', '-w', '%{http_code}|%{time_total}',
+            '--max-time', $probeTimeout, $endpoint)
+        $health = Invoke-CurlCapture -Arguments $healthArgs
+        $statusCode = ''
+        $elapsedSeconds = ''
+        $match = [regex]::Match($health.Output, '(?m)(\d{3})\|([0-9.]+)\s*$')
+        if ($match.Success) {
+            $statusCode = $match.Groups[1].Value
+            $elapsedSeconds = $match.Groups[2].Value
+        }
+        $healthOk = ($health.ExitCode -eq 0) -and ($statusCode -in @('200', '204'))
+        if ($healthOk) {
+            $healthTarget = ([uri]$endpoint).Host
+            break
+        }
     }
 
-    $healthOk = ($health.ExitCode -eq 0) -and ($statusCode -in @('200', '204'))
     $exitIp = $null
     $exitIpOk = $false
     if ($healthOk) {
+        $ipTimeout = ([Math]::Max(0.25, [Math]::Min(3, $TimeoutSec / 3.0))).ToString(
+            '0.###', [Globalization.CultureInfo]::InvariantCulture)
         foreach ($endpoint in @('https://api.ipify.org', 'https://ifconfig.me/ip', 'https://icanhazip.com')) {
-            $ipArgs = @(
-                '-sS',
-                '--max-time', [string][Math]::Min($TimeoutSec, 10),
-                '-x', "http://127.0.0.1:$Port",
-                $endpoint
-            )
+            $ipArgs = $proxyArgs + @('--fail', '--max-time', $ipTimeout, $endpoint)
             $ipResult = Invoke-CurlCapture -Arguments $ipArgs
-            if ($ipResult.ExitCode -eq 0 -and $ipResult.Output -match '^(?:(?:\d{1,3}\.){3}\d{1,3}|[0-9a-fA-F:]{3,})$') {
-                $exitIp = $ipResult.Output.Trim()
+            $parsedIp = $null
+            if ($ipResult.ExitCode -eq 0 -and
+                [Net.IPAddress]::TryParse($ipResult.Output.Trim(), [ref]$parsedIp)) {
+                $exitIp = $parsedIp.ToString()
                 $exitIpOk = $true
                 break
             }
@@ -301,13 +309,11 @@ function Test-ProxyExitHealth {
     if (-not $healthOk) {
         $failureStage = 'health'
     }
-    elseif (-not $exitIpOk) {
-        $failureStage = 'exit-ip'
-    }
 
     return [pscustomobject]@{
-        Ok = ($healthOk -and $exitIpOk)
+        Ok = $healthOk
         HealthOk = $healthOk
+        HealthTarget = $healthTarget
         ExitIpOk = $exitIpOk
         StatusCode = $statusCode
         LatencyMs = $latencyMs

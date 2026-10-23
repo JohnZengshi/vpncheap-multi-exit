@@ -8,6 +8,7 @@ const AUTO_KEY = 'exit-control.auto-refresh';
 const STATE_LABELS = {
   healthy: '健康',
   unhealthy: '异常',
+  degraded: '连接波动',
   starting: '启动中',
   stopped: '已停止',
   quarantined: '已隔离',
@@ -52,6 +53,11 @@ const ui = {
   poolBusy: false,
   poolPending: new Set(),
   exportBusy: false,
+  subscriptionPosting: false,
+  subscriptionError: '',
+  subscriptionCooldownUntil: 0,
+  subscriptionTimer: null,
+  subscriptionWatchUntil: 0,
   query: '',
   auto: readAutoPreference(),
   history: new Map(),
@@ -410,15 +416,13 @@ async function exportExitIps() {
       throw new Error('没有可导出的出口节点');
     }
 
-    const header = ['节点', '地区', '协议', '本地入口', '状态', '真实出口 IP', '最近检查'];
+    const header = ['节点', '地区', '协议', 'VPNCheap 服务器 IP/地址', '服务器端口'];
     const lines = rows.map((exit) => [
       exit.nodeName || '',
       exit.country || '',
       exit.protocol || '',
-      exit.port ? `127.0.0.1:${exit.port}` : '',
-      exit.healthOk ? '健康' : '异常',
-      exit.exitIp || '',
-      exit.lastCheckAt || ''
+      exit.serverAddress || '',
+      exit.serverPort || ''
     ].map(csvCell).join(','));
     const csv = `\uFEFF${header.map(csvCell).join(',')}\r\n${lines.join('\r\n')}\r\n`;
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
@@ -431,15 +435,15 @@ async function exportExitIps() {
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
 
-    const ipCount = rows.filter((exit) => exit.exitIp).length;
-    showToast(`已导出 ${rows.length} 个节点，${ipCount} 个包含真实 IP`);
+    const missing = rows.filter((exit) => !exit.serverAddress || !exit.serverPort).length;
+    showToast(`已导出 ${rows.length} 个节点的服务器地址${missing ? `，${missing} 个地址缺失` : ''}`);
   } catch (error) {
     showToast(error && error.message ? error.message : '导出失败');
   } finally {
     ui.exportBusy = false;
     button.disabled = false;
     button.removeAttribute('aria-busy');
-    label.textContent = '导出 IP';
+    label.textContent = '导出服务器';
   }
 }
 
@@ -519,6 +523,40 @@ async function createPools(ports) {
   }
 }
 
+async function syncPools() {
+  const button = byId('pool-sync');
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/nine-router/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Exit-Control': '1' },
+      body: '{}'
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const accepted = await response.json();
+    showToast('代理池同步已开始');
+    for (let attempt = 0; attempt < 180; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const stateResponse = await fetch('/api/nine-router/sync', { cache: 'no-store' });
+      if (!stateResponse.ok) throw new Error(`HTTP ${stateResponse.status}`);
+      const state = await stateResponse.json();
+      if (Date.parse(state.updatedAt) < Date.parse(accepted.startedAt)) continue;
+      if (state.state === 'running' || state.state === 'pending') continue;
+      if (state.state !== 'completed') throw new Error('同步失败，已保留未安全迁移的代理池');
+      const removed = (state.actions || []).filter((item) => item.action === 'deleted').length;
+      const retained = (state.actions || []).filter((item) => item.action === 'retained').length;
+      showToast(`同步完成，清理 ${removed} 个旧代理池${retained ? `，${retained} 个仍有绑定，暂时保留` : ''}`);
+      await refresh();
+      return;
+    }
+    showToast('同步仍在后台进行');
+  } catch (error) {
+    showToast(error.message || '同步失败');
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function poolCreateButton(port) {
   const pending = ui.poolPending && ui.poolPending.has(port);
   const button = make('button', 'mini-btn', pending ? '创建中' : '创建代理池');
@@ -561,10 +599,34 @@ function buildExitRow(exit, poolPorts) {
   region.appendChild(make('span', 'region-code', exit.country || '—'));
   region.appendChild(make('span', 'region-protocol', exit.protocol || '未知协议'));
   regionCell.appendChild(region);
+  if (exit.fallbackActive) {
+    regionCell.appendChild(cellSub(`备用 · ${exit.activeNodeName || exit.activeNodeHash || ''}`));
+  }
+  if (exit.serverAddress && exit.serverPort) {
+    regionCell.appendChild(cellSub(`${exit.serverAddress}:${exit.serverPort}`));
+  }
   row.appendChild(regionCell);
 
   const statusCell = make('td');
   statusCell.appendChild(statusLine(tone, exitStateLabel(exit)));
+  if (exit.needsReview) {
+    statusCell.appendChild(cellSub('待核对映射'));
+  }
+  if (exit.recoveryState) {
+    const recoveryLabels = {
+      scheduled: '等待恢复验证',
+      validating: '正在验证恢复',
+      'update-pending': '等待恢复锁',
+      'validation-failed': '恢复验证未通过',
+      'rolled-back': '恢复未通过，已回退',
+      'rollback-failed': '回退失败，等待重建',
+      updated: '已重建，等待复检'
+    };
+    statusCell.appendChild(cellSub(recoveryLabels[exit.recoveryState] || '等待恢复'));
+    if (exit.nextRecoveryAt) {
+      statusCell.appendChild(cellSub(`下次验证 ${formatClock(exit.nextRecoveryAt)}`));
+    }
+  }
   if (!exit.processAlive) {
     statusCell.appendChild(cellSub('进程未运行'));
   } else if (exit.consecutiveFailures > 0) {
@@ -591,6 +653,9 @@ function buildExitRow(exit, poolPorts) {
 
   const hashCell = make('td');
   hashCell.appendChild(buildHashCell(exit.exitIpHash));
+  if (exit.healthOk && exit.exitIpOk === false) {
+    hashCell.appendChild(cellSub('IP 查询暂不可用'));
+  }
   row.appendChild(hashCell);
 
   const workerCell = make('td');
@@ -604,6 +669,32 @@ function buildExitRow(exit, poolPorts) {
   }
   if (workerMeta.length) {
     workerCell.appendChild(cellSub(workerMeta.join(' · ')));
+  }
+  if (exit.updateState || exit.updateErrorHash) {
+    const labels = {
+      updating: '更新中',
+      validating: '正在验证新配置',
+      pending: '等待更新',
+      'update-pending': '等待更新锁',
+      updated: '已更新',
+      error: '更新失败',
+      failed: '更新失败',
+      unchanged: '配置未变',
+      current: '配置最新',
+      'needs-review': '待核对映射',
+      'catalog-error': '读取订阅失败',
+      'snapshot-error': '配置快照保存失败',
+      'validation-failed': '更新验证失败',
+      'rollback-failed': '回退失败，等待恢复',
+      'rolled-back': '已回退'
+    };
+    const label = labels[exit.updateState] || exit.updateState || '更新失败';
+    const feedback = cellSub(`${label}${exit.updateErrorHash ? ` · ${shortId(exit.updateErrorHash)}` : ''}`);
+    if (exit.updateErrorHash || ['error', 'failed', 'validation-failed', 'rolled-back', 'rollback-failed', 'catalog-error', 'snapshot-error'].includes(exit.updateState)) {
+      feedback.classList.add('update-error');
+    }
+    feedback.title = exit.updateErrorHash || '';
+    workerCell.appendChild(feedback);
   }
   row.appendChild(workerCell);
 
@@ -758,7 +849,7 @@ function renderCandidateList() {
     });
 
     const name = make('span', 'candidate-name', candidate.nodeName || shortId(hash, 12));
-    const metaText = [candidate.country, candidate.protocol].filter(Boolean).join(' · ');
+    const metaText = [candidate.country, candidate.protocol, candidate.needsReview ? '待核对映射' : ''].filter(Boolean).join(' · ');
     const meta = make('span', 'candidate-meta', metaText || shortId(hash, 12));
     row.append(input, name, meta);
     fragment.appendChild(row);
@@ -1215,12 +1306,113 @@ function renderFlow() {
 
 function render() {
   renderTopbar();
+  renderSubscription();
   renderWarnings();
   renderStats();
   renderExits();
   renderPools();
   renderConnections();
   renderFlow();
+}
+
+function renderSubscription() {
+  const subscription = (ui.data && ui.data.subscription) || {};
+  const busy = ui.subscriptionPosting || subscription.state === 'refreshing';
+  const button = byId('subscription-refresh-btn');
+  const status = byId('subscription-status');
+  const cooldownUntil = Math.max(ui.subscriptionCooldownUntil, Date.parse(subscription.cooldownUntil) || 0);
+  button.disabled = busy || Date.now() < cooldownUntil;
+  button.classList.toggle('is-spinning', busy);
+  button.setAttribute('aria-busy', String(busy));
+  status.classList.toggle('is-busy', busy);
+  status.classList.toggle('is-error', !busy && (Boolean(ui.subscriptionError) || subscription.state === 'error'));
+
+  let label = '订阅 · 尚未更新';
+  if (busy) {
+    label = '订阅 · 更新中';
+  } else if (ui.subscriptionError) {
+    label = `订阅 · ${ui.subscriptionError}`;
+  } else if (subscription.state === 'error') {
+    const errors = {
+      'subscription-login-required': '请先登录 VPNCheap',
+      'subscription-empty-catalog': '未返回可用节点',
+      'subscription-network-refresh-failed': '网络更新失败',
+      'subscription-invalid-catalog': '节点数据无效',
+      'subscription-suspicious-catalog-shrink': '节点数量异常，已保留原订阅',
+      'subscription-refresh-incomplete': '更新未完成，请重试'
+    };
+    label = `订阅 · ${errors[subscription.errorCode] || '更新失败'}`;
+    if (subscription.errorHash) {
+      label += ` · ${shortId(subscription.errorHash)}`;
+    }
+    if (subscription.lastSuccessAt) {
+      label += ` · 上次成功 ${formatClock(subscription.lastSuccessAt)}`;
+    }
+  } else if (subscription.state === 'updated' || subscription.lastSuccessAt) {
+    label = `订阅 · 已更新 ${formatClock(subscription.lastSuccessAt || subscription.updatedAt)}`;
+    if (subscription.nodeCount !== null && subscription.nodeCount !== undefined) {
+      label += ` · ${subscription.nodeCount} 个节点`;
+    }
+  }
+  status.textContent = label;
+  status.title = [
+    subscription.errorCode,
+    subscription.errorHash,
+    subscription.nextRefreshAt ? `下次更新 ${formatClock(subscription.nextRefreshAt)}` : ''
+  ].filter(Boolean).join(' · ');
+  armSubscriptionPoll();
+}
+
+function armSubscriptionPoll() {
+  window.clearTimeout(ui.subscriptionTimer);
+  const subscription = (ui.data && ui.data.subscription) || {};
+  const cooldownUntil = Math.max(ui.subscriptionCooldownUntil, Date.parse(subscription.cooldownUntil) || 0);
+  const watching = ui.subscriptionPosting || subscription.state === 'refreshing' || Date.now() < ui.subscriptionWatchUntil;
+  if (!watching && Date.now() >= cooldownUntil) {
+    return;
+  }
+  ui.subscriptionTimer = window.setTimeout(async () => {
+    if (watching) {
+      await refresh();
+    }
+    renderSubscription();
+  }, watching ? 1500 : Math.max(50, cooldownUntil - Date.now()));
+}
+
+async function refreshSubscription() {
+  if (byId('subscription-refresh-btn').disabled || ui.subscriptionPosting) {
+    return;
+  }
+  ui.subscriptionPosting = true;
+  ui.subscriptionError = '';
+  renderSubscription();
+  try {
+    const response = await fetch('/api/subscription/refresh', {
+      method: 'POST',
+      cache: 'no-store',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Exit-Control': '1'
+      },
+      body: '{}'
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error === 'subscription-refresh-launch-failed' ? '无法启动更新' : `请求失败（HTTP ${response.status}）`);
+    }
+    ui.subscriptionCooldownUntil = Date.parse(result.subscription && result.subscription.cooldownUntil) || Date.now() + 10000;
+    ui.subscriptionWatchUntil = Date.now() + 10000;
+    if (ui.data && result.subscription) {
+      ui.data.subscription = result.subscription;
+    }
+  } catch (error) {
+    ui.subscriptionError = error && error.message ? error.message : '更新请求失败';
+    showToast(ui.subscriptionError);
+  } finally {
+    ui.subscriptionPosting = false;
+    await refresh();
+    renderSubscription();
+  }
 }
 
 async function refresh() {
@@ -1324,10 +1516,12 @@ function bind() {
     refresh();
     armTimer();
   });
+  byId('subscription-refresh-btn').addEventListener('click', refreshSubscription);
 
   byId('config-btn').addEventListener('click', openConfigDialog);
   byId('export-ips-btn').addEventListener('click', exportExitIps);
   byId('pool-create-all').addEventListener('click', () => createPools(creatablePorts()));
+  byId('pool-sync').addEventListener('click', syncPools);
   byId('config-close').addEventListener('click', closeConfigDialog);
   byId('config-cancel').addEventListener('click', closeConfigDialog);
   byId('exit-config-form').addEventListener('submit', applyExitConfig);

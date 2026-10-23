@@ -21,6 +21,10 @@ $ledgerPath = Join-Path $runtimeDirectory '9router-applied.json'
 $exitConfigPath = Join-Path $runtimeDirectory 'exit-config.json'
 $recordPath = Join-Path $runtimeDirectory 'dashboard.json'
 $logPath = Join-Path $runtimeDirectory 'logs\dashboard.log'
+$subscriptionStatusPath = Join-Path $runtimeDirectory 'subscription-status.json'
+$script:subscriptionRefreshProcess = $null
+$script:subscriptionRefreshLaunchAt = [datetime]::MinValue
+$subscriptionRefreshCooldownSeconds = 10
 
 $nineRouterCacheSeconds = 15
 $taskCacheSeconds = 10
@@ -28,10 +32,14 @@ $script:nineRouterCache = $null
 $script:nineRouterCacheAt = [datetime]::MinValue
 $script:taskCache = $null
 $script:taskCacheAt = [datetime]::MinValue
+$script:poolSyncProcess = $null
+$script:poolSyncLaunchAt = [datetime]::MinValue
 
 . "$scriptDirectory\lib\broker-common.ps1"
 . "$scriptDirectory\lib\9router.ps1"
 . "$scriptDirectory\lib\dashboard-pools.ps1"
+. "$scriptDirectory\lib\vpncheap-state.ps1"
+. "$scriptDirectory\lib\subscription-state.ps1"
 
 function Write-DashboardLog {
     param(
@@ -42,6 +50,79 @@ function Write-DashboardLog {
     Write-RedactedLog -Path $logPath -Message $Message
 }
 
+function Start-DashboardPoolSync {
+    if ($null -ne $script:poolSyncProcess -and -not $script:poolSyncProcess.HasExited) { return }
+    $script:poolSyncProcess = Start-DetachedPowerShell -ScriptPath "$scriptDirectory\9router-sync.ps1" -WorkingDirectory $projectRoot
+    $script:poolSyncLaunchAt = Get-Date
+}
+
+function Get-DashboardSubscriptionStatus {
+    $record = Read-JsonFile -Path $subscriptionStatusPath
+    $result = [ordered]@{
+        state = if ($null -ne $record) { [string](Get-OptionalProperty -Object $record -Name 'state') } else { 'missing' }
+        updatedAt = Get-OptionalProperty -Object $record -Name 'updatedAt'
+        lastSuccessAt = Get-OptionalProperty -Object $record -Name 'lastSuccessAt'
+        nodeCount = Get-OptionalProperty -Object $record -Name 'nodeCount'
+        errorCode = Get-OptionalProperty -Object $record -Name 'errorCode'
+        errorHash = Get-OptionalProperty -Object $record -Name 'errorHash'
+        nextRefreshAt = Get-OptionalProperty -Object $record -Name 'nextRefreshAt'
+        cooldownUntil = if ($script:subscriptionRefreshLaunchAt -ne [datetime]::MinValue) {
+            $script:subscriptionRefreshLaunchAt.AddSeconds($subscriptionRefreshCooldownSeconds).ToUniversalTime().ToString('o')
+        } else { $null }
+    }
+    $refreshOwnerAlive = Test-ProcessAlive -ProcessId (Get-OptionalProperty -Object $record -Name 'pid')
+    if ($result.state -eq 'refreshing' -and -not $refreshOwnerAlive) {
+        $result.state = 'error'
+        $result.errorCode = 'subscription-refresh-incomplete'
+    }
+    if ($null -ne $script:subscriptionRefreshProcess) {
+        if (-not $script:subscriptionRefreshProcess.HasExited) {
+            $result.state = 'refreshing'
+            $result.errorCode = $null
+            $result.errorHash = $null
+        }
+        else {
+            # A failed child can exit before publishing its terminal status.
+            $publishedAt = ConvertTo-SubscriptionTimestamp $result.updatedAt
+            $hasNewStatus = $publishedAt -ne [datetimeoffset]::MinValue -and
+                $publishedAt.UtcDateTime -ge $script:subscriptionRefreshLaunchAt.ToUniversalTime() -and
+                $result.state -in @('updated', 'error')
+            if (-not $hasNewStatus -and -not ($result.state -eq 'refreshing' -and $refreshOwnerAlive)) {
+                $result.state = 'error'
+                $result.errorCode = 'subscription-refresh-incomplete'
+            }
+        }
+    }
+    return $result
+}
+
+function Invoke-DashboardSubscriptionRefresh {
+    $subscription = Get-DashboardSubscriptionStatus
+    if ($subscription.state -eq 'refreshing') {
+        return @{ code = 202; body = @{ ok = $true; launched = $false; subscription = $subscription } }
+    }
+    if (((Get-Date) - $script:subscriptionRefreshLaunchAt).TotalSeconds -lt $subscriptionRefreshCooldownSeconds) {
+        return @{ code = 202; body = @{ ok = $true; launched = $false; subscription = $subscription } }
+    }
+
+    try {
+        if ($null -ne $script:subscriptionRefreshProcess) {
+            $script:subscriptionRefreshProcess.Dispose()
+            $script:subscriptionRefreshProcess = $null
+        }
+        $script:subscriptionRefreshLaunchAt = Get-Date
+        $script:subscriptionRefreshProcess = Start-DetachedPowerShell `
+            -ScriptPath (Join-Path $scriptDirectory 'subscription-refresh.ps1') `
+            -ScriptArguments @('-RuntimeDirectory', $runtimeDirectory, '-Force') `
+            -WorkingDirectory $projectRoot
+    }
+    catch {
+        Write-DashboardLog -Message ('subscription-refresh-launch-error type={0}' -f $_.Exception.GetType().Name)
+        return @{ code = 500; body = @{ error = 'subscription-refresh-launch-failed' } }
+    }
+    return @{ code = 202; body = @{ ok = $true; launched = $true; subscription = (Get-DashboardSubscriptionStatus) } }
+}
+
 function Get-DashboardSnapshot {
     $warnings = New-Object System.Collections.Generic.List[string]
     $status = Read-JsonFile -Path $statusPath
@@ -49,6 +130,10 @@ function Get-DashboardSnapshot {
     $ledger = Read-JsonFile -Path $ledgerPath
 
     $brokerState = if ($null -ne $status) { [string](Get-OptionalProperty -Object $status -Name 'state') } else { 'missing' }
+    $brokerAlive = Test-ProcessAlive -ProcessId (Get-OptionalProperty -Object $status -Name 'brokerPid')
+    if ($null -ne $status -and -not $brokerAlive) {
+        $brokerState = 'stopped'
+    }
     if ($null -eq $status) {
         $warnings.Add('broker-status-missing')
     }
@@ -185,11 +270,9 @@ function Get-DashboardSnapshot {
                 protocol = [string](Get-OptionalProperty -Object $_ -Name 'protocol')
                 country = [string](Get-OptionalProperty -Object $_ -Name 'country')
                 selected = [bool](Get-OptionalProperty -Object $_ -Name 'selected')
+                needsReview = [bool](Get-OptionalProperty -Object $_ -Name 'needsReview')
             }
         })
-        if ($healthyCount -lt $selectedCount) {
-            $warnings.Add('exit-degraded')
-        }
         if (-not [string]::IsNullOrWhiteSpace([string](Get-OptionalProperty -Object $status -Name 'refreshErrorHash'))) {
             $warnings.Add('catalog-refresh-error')
         }
@@ -200,6 +283,19 @@ function Get-DashboardSnapshot {
             $worker = Read-JsonFile -Path $workerPath
             $workerPid = Get-OptionalProperty -Object $_ -Name 'workerPid'
             $processAlive = Test-ProcessAlive -ProcessId $workerPid
+            $workerIsCurrent = $processAlive -and $null -ne $worker -and
+                [string](Get-OptionalProperty -Object $worker -Name 'workerPid') -eq [string]$workerPid
+            $workerHealthy = $brokerAlive -and $brokerState -eq 'running' -and $workerIsCurrent -and
+                [bool](Get-OptionalProperty -Object $worker -Name 'healthOk')
+            $updateState = Get-OptionalProperty -Object $_ -Name 'updateState'
+            $updateErrorHash = Get-OptionalProperty -Object $_ -Name 'updateErrorHash'
+            if ($workerIsCurrent) {
+                $workerUpdateState = Get-OptionalProperty -Object $worker -Name 'updateState'
+                if (-not [string]::IsNullOrWhiteSpace([string]$workerUpdateState)) {
+                    $updateState = $workerUpdateState
+                    $updateErrorHash = Get-OptionalProperty -Object $worker -Name 'updateErrorHash'
+                }
+            }
 
             [ordered]@{
                 nodeName = [string](Get-OptionalProperty -Object $_ -Name 'nodeName')
@@ -207,27 +303,47 @@ function Get-DashboardSnapshot {
                 port = [int](Get-OptionalProperty -Object $_ -Name 'port')
                 endpoint = '127.0.0.1:{0}' -f [int](Get-OptionalProperty -Object $_ -Name 'port')
                 country = [string](Get-OptionalProperty -Object $_ -Name 'country')
-                protocol = [string](Get-OptionalProperty -Object $_ -Name 'protocol')
-                state = [string](Get-OptionalProperty -Object $_ -Name 'state')
+                protocol = if ($workerIsCurrent -and (Get-OptionalProperty $worker 'protocol')) {
+                    [string](Get-OptionalProperty $worker 'protocol')
+                } else { [string](Get-OptionalProperty $_ 'protocol') }
+                state = if (-not $brokerAlive) { 'stopped' } elseif ($workerIsCurrent) { [string](Get-OptionalProperty -Object $worker -Name 'state') } else { [string](Get-OptionalProperty -Object $_ -Name 'state') }
                 processState = [string](Get-OptionalProperty -Object $_ -Name 'processState')
                 processAlive = $processAlive
-                healthOk = [bool](Get-OptionalProperty -Object $_ -Name 'healthOk')
-                httpStatus = [string](Get-OptionalProperty -Object $_ -Name 'httpStatus')
-                latencyMs = Get-OptionalProperty -Object $_ -Name 'latencyMs'
-                exitIpHash = [string](Get-OptionalProperty -Object $_ -Name 'exitIpHash')
-                consecutiveFailures = [int](Get-OptionalProperty -Object $_ -Name 'consecutiveFailures')
-                failureStage = Get-OptionalProperty -Object $_ -Name 'failureStage'
-                lastCheckAt = Get-OptionalProperty -Object $_ -Name 'lastCheckAt'
+                needsReview = [bool](Get-OptionalProperty -Object $_ -Name 'needsReview')
+                healthOk = $workerHealthy
+                httpStatus = if ($workerIsCurrent) { [string](Get-OptionalProperty -Object $worker -Name 'httpStatus') } else { '' }
+                latencyMs = if ($workerIsCurrent) { Get-OptionalProperty -Object $worker -Name 'latencyMs' } else { $null }
+                exitIpHash = if ($workerIsCurrent) { [string](Get-OptionalProperty -Object $worker -Name 'exitIpHash') } else { '' }
+                exitIpOk = if ($workerIsCurrent) { Get-OptionalProperty $worker 'exitIpOk' } else { $null }
+                healthTarget = if ($workerIsCurrent) { Get-OptionalProperty $worker 'healthTarget' } else { $null }
+                recoveryState = if ($workerIsCurrent) { Get-OptionalProperty $worker 'recoveryState' } else { $null }
+                recoveryAttempt = if ($workerIsCurrent) { Get-OptionalProperty $worker 'recoveryAttempt' } else { $null }
+                nextRecoveryAt = if ($workerIsCurrent) { Get-OptionalProperty $worker 'nextRecoveryAt' } else { $null }
+                recoveryErrorHash = if ($workerIsCurrent) { Get-OptionalProperty $worker 'recoveryErrorHash' } else { $null }
+                fallbackActive = $workerIsCurrent -and [bool](Get-OptionalProperty $worker 'fallbackActive')
+                activeNodeHash = if ($workerIsCurrent) { Get-OptionalProperty $worker 'activeNodeHash' } else { $null }
+                activeNodeName = if ($workerIsCurrent) { Get-OptionalProperty $worker 'activeNodeName' } else { $null }
+                serverAddress = if ($workerIsCurrent) { Get-OptionalProperty $worker 'serverAddress' } else { $null }
+                serverPort = if ($workerIsCurrent) { Get-OptionalProperty $worker 'serverPort' } else { $null }
+                consecutiveFailures = if ($workerIsCurrent) { [int](Get-OptionalProperty -Object $worker -Name 'consecutiveFailures') } else { 0 }
+                failureStage = if ($workerIsCurrent) { Get-OptionalProperty -Object $worker -Name 'failureStage' } else { $null }
+                lastCheckAt = if ($workerIsCurrent) { Get-OptionalProperty -Object $worker -Name 'lastCheckAt' } else { $null }
                 workerPid = $workerPid
                 restartCount = [int](Get-OptionalProperty -Object $_ -Name 'restartCount')
-                singBoxVersion = [string](Get-OptionalProperty -Object $worker -Name 'singBoxVersion')
-                workerStartedAt = Get-OptionalProperty -Object $worker -Name 'startedAt'
+                singBoxVersion = if ($workerIsCurrent) { [string](Get-OptionalProperty -Object $worker -Name 'singBoxVersion') } else { '' }
+                workerStartedAt = if ($workerIsCurrent) { Get-OptionalProperty -Object $worker -Name 'startedAt' } else { $null }
+                updateState = $updateState
+                updateErrorHash = $updateErrorHash
             }
         })
+        $healthyCount = @($exitRows | Where-Object { $_.healthOk }).Count
+        if ($healthyCount -lt $selectedCount) {
+            $warnings.Add('exit-degraded')
+        }
     }
 
     $poolPlan = @()
-    if (-not $warnings.Contains('nine-router-unavailable')) {
+    if ($brokerAlive -and $brokerState -eq 'running' -and -not $warnings.Contains('nine-router-unavailable')) {
         $poolPlan = @(Get-DashboardPoolPlan -Status $status -Pools $pools -Connections $connections)
     }
 
@@ -259,6 +375,7 @@ function Get-DashboardSnapshot {
             startedAt = Get-OptionalProperty -Object $supervisor -Name 'startedAt'
         }
         task = $task
+        subscription = Get-DashboardSubscriptionStatus
         exits = $exitRows
         candidates = $candidateRows
         pools = $poolRows
@@ -284,25 +401,28 @@ function Get-DashboardExitIpExport {
         throw 'broker-status-missing'
     }
 
+    $catalog = Read-ProtectedSubscriptionFile -Path (Join-Path $runtimeDirectory 'catalog.dpapi.json')
+    $nodesByHash = @{}
+    foreach ($node in @(Get-OptionalProperty -Object $catalog -Name 'nodes')) {
+        if ($null -ne $node) {
+            $nodesByHash[(Get-StringSha256Short -Text ([string]$node.id))] = $node
+        }
+    }
     $rows = @(Get-OptionalProperty -Object $status -Name 'exits' | Where-Object { $null -ne $_ } | ForEach-Object {
         $nodeHash = [string](Get-OptionalProperty -Object $_ -Name 'nodeHash')
-        $workerPath = Join-Path $runtimeDirectory ('workers\{0}.json' -f $nodeHash)
-        $worker = Read-JsonFile -Path $workerPath
-        $workerPid = Get-OptionalProperty -Object $_ -Name 'workerPid'
-        $workerStatusPid = Get-OptionalProperty -Object $worker -Name 'workerPid'
-        $workerIsCurrent = $null -ne $worker -and [string]$workerStatusPid -eq [string]$workerPid
-        $workerHealthy = $workerIsCurrent -and [bool](Get-OptionalProperty -Object $worker -Name 'healthOk')
+        $snapshot = Read-ProtectedSubscriptionFile -Path (Get-ExitSnapshotPath -RuntimeDirectory $runtimeDirectory -NodeHash $nodeHash)
+        # The slot snapshot records the applied server, even when a subscription changes.
+        $node = Get-OptionalProperty -Object $snapshot -Name 'node'
+        if ($null -eq $node -and $nodesByHash.ContainsKey($nodeHash)) {
+            $node = $nodesByHash[$nodeHash]
+        }
 
         [ordered]@{
-            nodeName = [string](Get-OptionalProperty -Object $_ -Name 'nodeName')
-            nodeHash = $nodeHash
-            port = [int](Get-OptionalProperty -Object $_ -Name 'port')
-            country = [string](Get-OptionalProperty -Object $_ -Name 'country')
-            protocol = [string](Get-OptionalProperty -Object $_ -Name 'protocol')
-            state = [string](Get-OptionalProperty -Object $_ -Name 'state')
-            healthOk = [bool](Get-OptionalProperty -Object $_ -Name 'healthOk')
-            exitIp = if ($workerHealthy) { [string](Get-OptionalProperty -Object $worker -Name 'exitIp') } else { '' }
-            lastCheckAt = Get-OptionalProperty -Object $worker -Name 'lastCheckAt'
+            nodeName = if ($null -ne $node) { [string](Get-OptionalProperty $node 'name') } else { [string](Get-OptionalProperty $_ 'nodeName') }
+            country = if ($null -ne $node) { [string](Get-OptionalProperty $node 'country_code') } else { [string](Get-OptionalProperty $_ 'country') }
+            protocol = if ($null -ne $node) { [string](Get-OptionalProperty $node 'protocol') } else { [string](Get-OptionalProperty $_ 'protocol') }
+            serverAddress = [string](Get-OptionalProperty -Object $node -Name 'address')
+            serverPort = Get-OptionalProperty -Object $node -Name 'port'
         }
     })
 
@@ -488,6 +608,15 @@ function Invoke-DashboardRequest {
             return
         }
 
+        if ($path -eq '/api/subscription/refresh') {
+            if (-not (Test-DashboardControlRequest -Stream $stream -Method $method -Headers $headers -AllowedMethod 'POST')) {
+                return
+            }
+            $outcome = Invoke-DashboardSubscriptionRefresh
+            Send-DashboardJson -Stream $stream -StatusCode $outcome.code -Value $outcome.body
+            return
+        }
+
         if ($path -eq '/api/exit-config') {
             if ($method -ne 'POST') {
                 Send-DashboardResponse -Stream $stream -StatusCode 405 -ContentType 'text/plain; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('Method not allowed'))
@@ -575,13 +704,21 @@ function Invoke-DashboardRequest {
             }
 
             $selectionMode = if ($nodeHashes.Count -gt 0) { 'manual' } else { 'auto' }
-            Write-JsonFileAtomic -Path $exitConfigPath -Value ([ordered]@{
+            $existingConfig = Read-JsonFile -Path $exitConfigPath
+            $newConfig = [ordered]@{
                 schemaVersion = 1
                 maxExits = $maxExits
                 selectionMode = $selectionMode
                 nodeHashes = @($nodeHashes)
                 updatedAt = (Get-Date).ToUniversalTime().ToString('o')
-            })
+            }
+            $replacements = Get-OptionalProperty -Object $existingConfig -Name 'replacements'
+            if ($null -ne $replacements) {
+                $newConfig['replacements'] = $replacements
+            }
+            $autoFallback = Get-OptionalProperty $existingConfig 'autoFallback'
+            if ($null -ne $autoFallback) { $newConfig['autoFallback'] = [bool]$autoFallback }
+            Write-JsonFileAtomic -Path $exitConfigPath -Value $newConfig
             Write-DashboardLog -Message ('exit-config mode={0} max={1} selected={2}' -f $selectionMode, $maxExits, $nodeHashes.Count)
 
             $payload = [ordered]@{
@@ -594,6 +731,21 @@ function Invoke-DashboardRequest {
             return
         }
 
+        if ($path -eq '/api/nine-router/sync') {
+            if ($method -eq 'GET') {
+                $syncStatus = Read-JsonFile (Join-Path $runtimeDirectory '9router-sync-status.json')
+                if ($null -eq $syncStatus) { $syncStatus = @{ state = 'pending' } }
+                if ($syncStatus.state -ne 'running') { $script:nineRouterCache = $null }
+                Send-DashboardJson -Stream $stream -StatusCode 200 -Value $syncStatus
+                return
+            }
+            if (-not (Test-DashboardControlRequest -Stream $stream -Method $method -Headers $headers)) { return }
+            Start-DashboardPoolSync
+            Send-DashboardJson -Stream $stream -StatusCode 202 -Value @{
+                ok = $true; state = 'running'; startedAt = $script:poolSyncLaunchAt.ToUniversalTime().ToString('o')
+            }
+            return
+        }
         if ($path -eq '/api/nine-router/pools') {
             if (-not (Test-DashboardControlRequest -Stream $stream -Method $method -Headers $headers -AllowedMethod 'POST')) {
                 return
@@ -609,7 +761,17 @@ function Invoke-DashboardRequest {
                 Send-DashboardJson -Stream $stream -StatusCode 400 -Value @{ error = 'invalid-json' }
                 return
             }
-            $outcome = Invoke-CreateNineRouterPools -Request $request
+            $poolLock = $null
+            try {
+                try {
+                    $poolLock = [IO.File]::Open((Join-Path $runtimeDirectory '9router-sync.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+                } catch {
+                    Send-DashboardJson -Stream $stream -StatusCode 409 -Value @{ error = 'pool-sync-running' }
+                    return
+                }
+                $outcome = Invoke-CreateNineRouterPools -Request $request
+            }
+            finally { if ($null -ne $poolLock) { $poolLock.Dispose() } }
             Send-DashboardJson -Stream $stream -StatusCode $outcome.code -Value $outcome.body
             return
         }
@@ -663,6 +825,14 @@ function Invoke-DashboardServer {
 
     try {
         while ($true) {
+            if (((Get-Date) - $script:poolSyncLaunchAt).TotalSeconds -ge 300) {
+                try { Start-DashboardPoolSync }
+                catch { Write-DashboardLog 'pool-sync-launch-failed' }
+            }
+            if (-not $listener.Pending()) {
+                Start-Sleep -Milliseconds 100
+                continue
+            }
             $client = $listener.AcceptTcpClient()
             try {
                 $client.ReceiveTimeout = 5000

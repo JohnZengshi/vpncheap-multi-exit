@@ -48,6 +48,11 @@ if ([string]::IsNullOrWhiteSpace($LedgerPath)) {
     $LedgerPath = Join-Path $RuntimeDirectory '9router-applied.json'
 }
 
+$syncLock = $null
+try {
+if ($Apply) {
+    $syncLock = [IO.File]::Open((Join-Path $RuntimeDirectory '9router-sync.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+}
 $status = Read-JsonFile -Path $StatusPath
 if ($null -eq $status) {
     throw ('Broker status not found: {0}. Start the broker first.' -f $StatusPath)
@@ -347,4 +352,8 @@ if ($testFailures.Count -gt 0) {
     Write-Output ''
     Write-Output ('Pool tests failed after {0} attempt(s): {1}' -f $TestAttempts, ($testFailures -join ', '))
     exit 3
+}
+}
+finally {
+    if ($null -ne $syncLock) { $syncLock.Dispose() }
 }

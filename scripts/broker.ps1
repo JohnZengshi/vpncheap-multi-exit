@@ -35,6 +35,7 @@ Set-StrictMode -Version Latest
 
 . "$PSScriptRoot\lib\vpncheap-state.ps1"
 . "$PSScriptRoot\lib\broker-common.ps1"
+. "$PSScriptRoot\lib\subscription-state.ps1"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($RuntimeDirectory)) {
@@ -71,15 +72,29 @@ function Ensure-RuntimeDirectories {
 }
 
 function Get-CandidateNodes {
-    $records = @(Get-VpnCheapCatalogAccountRecords -StatePath $StatePath -AssemblyPath $ManagedAssemblyPath)
-    if ($records.Count -eq 0) {
-        throw 'No VPNCheap catalog account records were found.'
-    }
-
+    $nodes = @(Get-SubscriptionNodes -RuntimeDirectory $RuntimeDirectory -StatePath $StatePath -AssemblyPath $ManagedAssemblyPath)
+    if ($nodes.Count -eq 0) { throw 'subscription-empty-catalog' }
     $result = New-Object System.Collections.Generic.List[object]
     $seen = New-Object 'System.Collections.Generic.HashSet[string]'
-    foreach ($record in $records) {
-        foreach ($node in $record.Nodes) {
+    $claimed = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $RuntimeDirectory 'nodes') -Filter '*.dpapi.json' -ErrorAction SilentlyContinue)) {
+        $slotHash = $file.Name -replace '\.dpapi\.json$', ''
+        $saved = Read-ProtectedSubscriptionFile $file.FullName
+        $replacement = Resolve-ExitNodeReplacement -Previous $saved.node -Nodes $nodes
+        $node = if ($null -ne $replacement) { $replacement } else { $saved.node }
+        $nodeProtocol = [string](Get-JsonProperty $node 'protocol')
+        $nodeCountry = [string](Get-JsonProperty $node 'country_code')
+        $fallbackActive = [bool](Get-OptionalProperty $saved 'fallbackActive')
+        if (($Protocol -and $nodeProtocol -ne $Protocol -and -not $fallbackActive) -or
+            ($Country -and $nodeCountry -ne $Country)) { continue }
+        $seen.Add($slotHash) | Out-Null
+        if ($null -ne $replacement) { $claimed.Add((Get-ExitNodeIdentity $replacement).SourceHash) | Out-Null }
+        $result.Add([pscustomobject]@{
+            NodeHash = $slotHash; NodeName = [string](Get-JsonProperty $node 'name')
+            Protocol = $nodeProtocol; Country = $nodeCountry; NeedsReview = ($null -eq $replacement)
+        })
+    }
+    foreach ($node in $nodes) {
             if (-not [bool](Get-JsonProperty -Object $node -Name 'online')) {
                 continue
             }
@@ -103,7 +118,7 @@ function Get-CandidateNodes {
             }
 
             $nodeHash = Get-StringSha256Short -Text $nodeId
-            if (-not $seen.Add($nodeHash)) {
+            if ($claimed.Contains($nodeHash) -or -not $seen.Add($nodeHash)) {
                 continue
             }
 
@@ -112,10 +127,24 @@ function Get-CandidateNodes {
                 NodeName = [string](Get-JsonProperty -Object $node -Name 'name')
                 Protocol = $nodeProtocol
                 Country = $nodeCountry
+                NeedsReview = $false
+            })
+    }
+
+    # Retain legacy slots whose provider IDs disappeared before snapshots existed.
+    # Missing metadata is not permission to guess a replacement or retire its port.
+    $previousStatus = Read-JsonFile $statusPath
+    foreach ($exit in @(Get-OptionalProperty $previousStatus 'exits')) {
+        if ($null -eq $exit) { continue }
+        $hash = [string]$exit.nodeHash
+        if (($Protocol -and $exit.protocol -ne $Protocol) -or ($Country -and $exit.country -ne $Country)) { continue }
+        if ($seen.Add($hash)) {
+            $result.Add([pscustomobject]@{
+                NodeHash = $hash; NodeName = [string]$exit.nodeName
+                Protocol = [string]$exit.protocol; Country = [string]$exit.country; NeedsReview = $true
             })
         }
     }
-
     return @($result | Sort-Object -Property Country, NodeHash)
 }
 
@@ -155,6 +184,7 @@ function Get-ExitConfig {
 function Get-DesiredExits {
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [object[]]$Candidates,
 
         [AllowNull()]
@@ -190,6 +220,13 @@ function Get-ExitConfigRevision {
 
     $item = Get-Item -LiteralPath $exitConfigPath
     return ('{0}:{1}' -f $item.LastWriteTimeUtc.Ticks, $item.Length)
+}
+
+function Get-SubscriptionRevision {
+    return (@($StatePath, (Join-Path $RuntimeDirectory 'catalog.dpapi.json')) | ForEach-Object {
+        $item = Get-Item -LiteralPath $_ -ErrorAction SilentlyContinue
+        if ($null -ne $item) { '{0}:{1}' -f $item.LastWriteTimeUtc.Ticks, $item.Length }
+    }) -join '|'
 }
 
 function Get-LeaseState {
@@ -280,6 +317,7 @@ function Get-FreePort {
 function Update-LeasesForDesired {
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [object[]]$Desired,
 
         [Parameter(Mandatory = $true)]
@@ -535,6 +573,7 @@ function Write-BrokerStatus {
         [hashtable]$PendingRestarts,
 
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [object[]]$Desired,
 
         [AllowNull()]
@@ -607,11 +646,25 @@ function Write-BrokerStatus {
             httpStatus = if ($null -ne $workerStatus) { $workerStatus.httpStatus } else { $null }
             latencyMs = if ($null -ne $workerStatus) { $workerStatus.latencyMs } else { $null }
             exitIpHash = if ($null -ne $workerStatus) { $workerStatus.exitIpHash } else { $null }
+            exitIpOk = Get-OptionalProperty $workerStatus 'exitIpOk'
+            healthTarget = Get-OptionalProperty $workerStatus 'healthTarget'
+            recoveryState = Get-OptionalProperty $workerStatus 'recoveryState'
+            recoveryAttempt = Get-OptionalProperty $workerStatus 'recoveryAttempt'
+            nextRecoveryAt = Get-OptionalProperty $workerStatus 'nextRecoveryAt'
+            recoveryErrorHash = Get-OptionalProperty $workerStatus 'recoveryErrorHash'
+            fallbackActive = [bool](Get-OptionalProperty $workerStatus 'fallbackActive')
+            activeNodeHash = Get-OptionalProperty $workerStatus 'activeNodeHash'
+            activeNodeName = Get-OptionalProperty $workerStatus 'activeNodeName'
+            serverAddress = Get-OptionalProperty $workerStatus 'serverAddress'
+            serverPort = Get-OptionalProperty $workerStatus 'serverPort'
             consecutiveFailures = if ($null -ne $workerStatus) { $workerStatus.consecutiveFailures } else { 0 }
             failureStage = if ($null -ne $workerStatus) { $workerStatus.failureStage } else { $null }
             lastCheckAt = if ($null -ne $workerStatus) { $workerStatus.lastCheckAt } else { $null }
             workerPid = $workerPid
             restartCount = $restartCount
+            needsReview = [bool](Get-OptionalProperty $exit 'NeedsReview')
+            updateState = Get-OptionalProperty $workerStatus 'updateState'
+            updateErrorHash = Get-OptionalProperty $workerStatus 'updateErrorHash'
         })
     }
 
@@ -640,6 +693,7 @@ function Write-BrokerStatus {
                 protocol = [string]$_.Protocol
                 country = [string]$_.Country
                 selected = $desiredHashes.Contains([string]$_.NodeHash)
+                needsReview = [bool](Get-OptionalProperty $_ 'NeedsReview')
             }
         })
     }
@@ -747,6 +801,7 @@ function Invoke-BrokerRunCore {
     $workers = @{}
     $pendingRestarts = @{}
     $lastCatalogRefresh = Get-Date
+    $lastSubscriptionRevision = Get-SubscriptionRevision
     $refreshErrorHash = $null
     $state = 'running'
 
@@ -760,6 +815,15 @@ function Invoke-BrokerRunCore {
             if (Get-StopRequested) {
                 $state = 'stopping'
                 break
+            }
+
+            try {
+                Start-SubscriptionRefreshIfDue -RuntimeDirectory $RuntimeDirectory -StatePath $StatePath `
+                    -AssemblyPath $ManagedAssemblyPath -ScriptPath (Join-Path $PSScriptRoot 'subscription-refresh.ps1') `
+                    -IntervalSec ([Math]::Min(86400, [Math]::Max(60, $CatalogRefreshSec)))
+            }
+            catch {
+                Write-BrokerLog ("subscription-schedule-error errorHash={0}" -f (Get-StringSha256Short $_.Exception.Message -Length 20))
             }
 
             $configRevision = Get-ExitConfigRevision
@@ -796,27 +860,23 @@ function Invoke-BrokerRunCore {
                 }
             }
 
-            if (((Get-Date) - $lastCatalogRefresh).TotalSeconds -ge $CatalogRefreshSec) {
+            $subscriptionRevision = Get-SubscriptionRevision
+            if ($subscriptionRevision -ne $lastSubscriptionRevision -or
+                ((Get-Date) - $lastCatalogRefresh).TotalSeconds -ge $CatalogRefreshSec) {
+                $lastCatalogRefresh = Get-Date
+                $lastSubscriptionRevision = $subscriptionRevision
                 try {
                     $newCandidates = @(Get-CandidateNodes)
                     $newDesired = @(Get-DesiredExits -Candidates $newCandidates -Config $exitConfig)
-                    $desiredHashes = New-Object 'System.Collections.Generic.HashSet[string]'
-                    foreach ($item in $newDesired) {
-                        $desiredHashes.Add([string]$item.NodeHash) | Out-Null
+                    # Passive subscription updates never deselect running slots.
+                    # Only an explicit exit-config change may stop a worker.
+                    if ($desired.Count -gt 0) {
+                        $newDesired = @($desired | ForEach-Object {
+                            $old = $_
+                            $updated = $newCandidates | Where-Object NodeHash -eq $old.NodeHash | Select-Object -First 1
+                            if ($null -ne $updated) { $updated } else { $old }
+                        })
                     }
-
-                    foreach ($hash in @($workers.Keys)) {
-                        if (-not $desiredHashes.Contains([string]$hash)) {
-                            Stop-WorkerEntry -Worker $workers[$hash]
-                            $workers.Remove($hash)
-                        }
-                    }
-                    foreach ($hash in @($pendingRestarts.Keys)) {
-                        if (-not $desiredHashes.Contains([string]$hash)) {
-                            $pendingRestarts.Remove($hash)
-                        }
-                    }
-
                     $candidates = $newCandidates
                     $desired = $newDesired
                     Update-LeasesForDesired -Desired $desired -Leases $leases -Retired $retired

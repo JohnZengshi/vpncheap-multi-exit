@@ -125,7 +125,7 @@
           <span class="switch-track"><span class="switch-knob"></span></span>
           <span class="switch-label">自动刷新</span>
         </label>
-        <button class="icon-btn" id="refresh-btn" type="button" title="立即刷新" aria-label="立即刷新">
+        <button class="icon-btn" id="refresh-btn" type="button" title="刷新面板" aria-label="刷新面板">
           <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>
         </button>
         <a class="link-btn" href="http://localhost:20128/dashboard/proxy-pools" target="_blank" rel="noreferrer">
@@ -177,6 +177,12 @@
             <span class="stat-meta" id="stat-uptime-meta">Broker</span>
           </div>
         </div>
+        <div class="subscription-bar">
+          <div class="subscription-status" id="subscription-status" role="status" aria-live="polite">订阅 · 等待数据</div>
+          <button class="icon-btn" id="subscription-refresh-btn" type="button" title="更新订阅" aria-label="更新订阅" aria-describedby="subscription-status">
+            <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>
+          </button>
+        </div>
       </div>
     </section>
 
@@ -188,9 +194,9 @@
             <p id="exit-subtitle">本地回环入口 · 等待快照</p>
           </div>
           <div class="controls">
-            <button class="link-btn" id="export-ips-btn" type="button" title="导出当前所有节点的真实出口 IP" aria-label="导出当前所有节点的真实出口 IP">
+            <button class="link-btn" id="export-ips-btn" type="button" title="导出所选线路的 VPNCheap 服务器 IP 和端口" aria-label="导出所选线路的 VPNCheap 服务器 IP 和端口">
               <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
-              <span id="export-ips-label">导出 IP</span>
+              <span id="export-ips-label">导出服务器</span>
             </button>
             <button class="link-btn" id="config-btn" type="button">
               <svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>
@@ -250,6 +256,9 @@
               <p id="pool-subtitle">读取中</p>
             </div>
             <div class="head-actions">
+              <button class="icon-btn" id="pool-sync" type="button" title="同步代理池" aria-label="同步代理池">
+                <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>
+              </button>
               <button class="link-btn" id="pool-create-all" type="button" hidden>
                 <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
                 <span id="pool-create-all-label">创建代理池</span>

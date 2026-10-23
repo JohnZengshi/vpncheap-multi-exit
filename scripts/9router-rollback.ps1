@@ -25,6 +25,11 @@ if ([string]::IsNullOrWhiteSpace($LedgerPath)) {
     $LedgerPath = Join-Path $RuntimeDirectory '9router-applied.json'
 }
 
+$syncLock = $null
+try {
+if ($Apply) {
+    $syncLock = [IO.File]::Open((Join-Path $RuntimeDirectory '9router-sync.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+}
 $ledger = Read-JsonFile -Path $LedgerPath
 if ($null -eq $ledger) {
     Write-Output ('No ledger found: {0}' -f $LedgerPath)
@@ -168,4 +173,8 @@ if ($Apply) {
 else {
     Write-Output ''
     Write-Output 'Dry run only. Re-run with -Apply to unbind connections and delete managed pools.'
+}
+}
+finally {
+    if ($null -ne $syncLock) { $syncLock.Dispose() }
 }
