@@ -119,6 +119,12 @@ pwsh -NoProfile -File .\scripts\install-broker-task.ps1 -StartNow
 pwsh -NoProfile -File .\scripts\9router-inventory.ps1 -ShowNames
 ```
 
+Broker 和计划任务安装脚本默认不过滤协议（`-Protocol ''`），候选列表包含
+`hysteria2`、`anytls` 等协议；已有手动出口选择保持不变。
+仍可显式传入 `-Protocol hysteria2` 限定协议。探测脚本的默认协议不变。
+已有计划任务需要更新启动参数，或重新运行安装脚本以持久化新默认值；
+不带 `-StartNow` 时不会重启运行中的 Broker，新参数在下次启动时生效。
+
 ## 单文件启动器
 
 可构建一个嵌入 PowerShell 脚本和 Dashboard 静态资源的 Windows 单文件可执行程序：

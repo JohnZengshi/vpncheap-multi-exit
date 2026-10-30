@@ -7,7 +7,7 @@ param(
 
     [int]$MaxExits = 13,
 
-    [string]$Protocol = 'hysteria2',
+    [string]$Protocol = '',
 
     [string]$Country = '',
 

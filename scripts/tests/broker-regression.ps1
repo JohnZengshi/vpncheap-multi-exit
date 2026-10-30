@@ -37,6 +37,50 @@ function Run-Test([string]$Name, [scriptblock]$Body) {
 }
 
 try {
+    Run-Test 'Broker and task installer default to no protocol filter' {
+        foreach ($file in @('broker.ps1', 'install-broker-task.ps1')) {
+            $parseTokens = $null
+            $parseErrors = $null
+            $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile(
+                "$root/scripts/$file", [ref]$parseTokens, [ref]$parseErrors)
+            Assert-Test ($parseErrors.Count -eq 0) "$file failed to parse."
+            $parameter = @($scriptAst.ParamBlock.Parameters | Where-Object {
+                $_.Name.VariablePath.UserPath -eq 'Protocol'
+            })
+            Assert-Test ($parameter.Count -eq 1) "$file has no Protocol parameter."
+            Assert-Test ($parameter[0].DefaultValue.SafeGetValue() -ceq '') "$file filters protocols by default."
+        }
+    }
+
+    Run-Test 'Unfiltered candidates include both protocols and preserve manual selection' {
+        $Protocol = ''
+        $Country = ''
+        $StatePath = 'fixture'
+        $ManagedAssemblyPath = 'fixture'
+        $statusPath = Join-Path $RuntimeDirectory 'missing-status.json'
+        $MaxExits = 2
+        function Get-SubscriptionNodes {
+            foreach ($protocolName in @('hysteria2', 'anytls')) {
+                [pscustomobject]@{
+                    id = $protocolName; name = $protocolName; protocol = $protocolName
+                    country_code = 'TW'; online = $true; raw_outbound = @{}
+                }
+            }
+        }
+        $candidates = @(Get-CandidateNodes)
+        Assert-Test ($candidates.Count -eq 2) 'Default filtering excluded a protocol.'
+        $selectedHash = Get-StringSha256Short -Text 'anytls'
+        $desired = @(Get-DesiredExits -Candidates $candidates -Config ([pscustomobject]@{
+            MaxExits = 2; NodeHashes = @($selectedHash)
+        }))
+        Assert-Test ($desired.Count -eq 1 -and $desired[0].NodeHash -eq $selectedHash) 'Manual selection changed.'
+        foreach ($filter in @('hysteria2', 'anytls')) {
+            $Protocol = $filter
+            $filtered = @(Get-CandidateNodes)
+            Assert-Test ($filtered.Count -eq 1 -and $filtered[0].Protocol -eq $filter) 'Explicit filter was ignored.'
+        }
+    }
+
     Run-Test 'Concurrent run must not clean up another broker workers' {
         $script:cleanupCalled = $false
         function Ensure-RuntimeDirectories {}

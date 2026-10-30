@@ -380,15 +380,17 @@ function fileTimestamp(date) {
   ].join('');
 }
 
-async function exportExitIps() {
+async function exportExitIps(format = 'csv') {
   if (ui.exportBusy) {
     return;
   }
 
-  const button = byId('export-ips-btn');
-  const label = byId('export-ips-label');
+  const direct = format === 'direct';
+  const button = byId(direct ? 'export-direct-btn' : 'export-ips-btn');
+  const label = byId(direct ? 'export-direct-label' : 'export-ips-label');
   ui.exportBusy = true;
-  button.disabled = true;
+  byId('export-ips-btn').disabled = true;
+  byId('export-direct-btn').disabled = true;
   button.setAttribute('aria-busy', 'true');
   label.textContent = '导出中';
 
@@ -425,25 +427,42 @@ async function exportExitIps() {
       exit.serverPort || ''
     ].map(csvCell).join(','));
     const csv = `\uFEFF${header.map(csvCell).join(',')}\r\n${lines.join('\r\n')}\r\n`;
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const addresses = rows.map((exit) => String(exit.serverAddress || '').trim())
+      .filter((address) => /^(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){3}$/.test(address)
+        && address.split('.').every((part) => Number(part) <= 255));
+    if (direct && !addresses.length) {
+      throw new Error('没有可导出的 IPv4 服务器地址');
+    }
+    const content = direct
+      ? `${addresses.map((address) => `- IP-CIDR,${address},DIRECT`).join('\r\n')}\r\n`
+      : csv;
+    const blob = new Blob([content], { type: direct ? 'text/plain;charset=utf-8' : 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `vpncheap-exit-ips-${fileTimestamp(new Date())}.csv`;
+    link.download = direct
+      ? `vpncheap-direct-rules-${fileTimestamp(new Date())}.txt`
+      : `vpncheap-exit-ips-${fileTimestamp(new Date())}.csv`;
     document.body.appendChild(link);
     link.click();
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
 
     const missing = rows.filter((exit) => !exit.serverAddress || !exit.serverPort).length;
-    showToast(`已导出 ${rows.length} 个节点的服务器地址${missing ? `，${missing} 个地址缺失` : ''}`);
+    if (direct) {
+      const skipped = rows.length - addresses.length;
+      showToast(`已导出 ${addresses.length} 条 DIRECT 规则${skipped ? `，跳过 ${skipped} 个缺失或非 IPv4 地址` : ''}`);
+    } else {
+      showToast(`已导出 ${rows.length} 个节点的服务器地址${missing ? `，${missing} 个地址缺失` : ''}`);
+    }
   } catch (error) {
     showToast(error && error.message ? error.message : '导出失败');
   } finally {
     ui.exportBusy = false;
-    button.disabled = false;
+    byId('export-ips-btn').disabled = false;
+    byId('export-direct-btn').disabled = false;
     button.removeAttribute('aria-busy');
-    label.textContent = '导出服务器';
+    label.textContent = direct ? '导出 DIRECT 规则' : '导出服务器';
   }
 }
 
@@ -1519,7 +1538,8 @@ function bind() {
   byId('subscription-refresh-btn').addEventListener('click', refreshSubscription);
 
   byId('config-btn').addEventListener('click', openConfigDialog);
-  byId('export-ips-btn').addEventListener('click', exportExitIps);
+  byId('export-ips-btn').addEventListener('click', () => exportExitIps());
+  byId('export-direct-btn').addEventListener('click', () => exportExitIps('direct'));
   byId('pool-create-all').addEventListener('click', () => createPools(creatablePorts()));
   byId('pool-sync').addEventListener('click', syncPools);
   byId('config-close').addEventListener('click', closeConfigDialog);

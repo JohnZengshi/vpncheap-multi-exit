@@ -6,3 +6,4 @@ secrets/
 *.tmp
 .codex-tmp/
 dist/
+test-results
