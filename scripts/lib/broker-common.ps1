@@ -7,11 +7,27 @@ function Read-JsonFile {
         [string]$Path
     )
 
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return $null
+    $filePath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    $content = $null
+    for ($attempt = 0; $attempt -lt 6; $attempt++) {
+        $reader = $null
+        try {
+            # Allow atomic replacement while a reader holds the previous file version.
+            $stream = [IO.File]::Open($filePath, 'Open', 'Read', ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+            $reader = [IO.StreamReader]::new($stream)
+            $content = $reader.ReadToEnd()
+            break
+        }
+        catch [IO.IOException] {
+            if ($attempt -eq 5) {
+                if (-not (Test-Path -LiteralPath $Path)) { return $null }
+                throw
+            }
+            Start-Sleep -Milliseconds 10
+        }
+        finally { if ($null -ne $reader) { $reader.Dispose() } }
     }
-
-    return Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json -Depth 100
+    return $content | ConvertFrom-Json -Depth 100
 }
 
 function Write-JsonFileAtomic {
@@ -188,6 +204,8 @@ function Get-OptionalProperty {
     if ($null -eq $Object) {
         return $null
     }
+
+    if ($Object -is [System.Collections.IDictionary]) { return $Object[$Name] }
 
     $property = $Object.PSObject.Properties[$Name]
     if ($null -eq $property) {

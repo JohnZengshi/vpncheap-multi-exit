@@ -50,8 +50,8 @@ function Assert-NineRouterLoopback {
 
 function New-NineRouterClient {
     param(
-        [string]$BaseUrl = 'http://localhost:20128',
-        [string]$DataDirectory = "$env:APPDATA\9router"
+        [string]$BaseUrl = $(if ($env:VPNCHEAP_NINE_ROUTER_URL) { $env:VPNCHEAP_NINE_ROUTER_URL } else { 'http://localhost:20128' }),
+        [string]$DataDirectory = $(if ($env:VPNCHEAP_NINE_ROUTER_DATA) { $env:VPNCHEAP_NINE_ROUTER_DATA } else { "$env:APPDATA\9router" })
     )
 
     $baseUri = Assert-NineRouterLoopback -BaseUrl $BaseUrl
@@ -104,7 +104,9 @@ function Invoke-NineRouterRequest {
         if ($null -ne $_.Exception.Response) {
             $status = [int]$_.Exception.Response.StatusCode
         }
-        throw ('9Router {0} {1} failed with status {2}.' -f $Method, $Path, $status)
+        $failure = [InvalidOperationException]::new(('9Router {0} {1} failed with status {2}.' -f $Method, $Path, $status))
+        $failure.Data['statusCode'] = $status
+        throw $failure
     }
 
     if ([string]::IsNullOrWhiteSpace([string]$response.Content)) {

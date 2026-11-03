@@ -204,7 +204,13 @@ Run-Test 'Dashboard forwards current recovery status and tolerates old workers' 
         $node.Name -eq 'Get-DashboardSnapshot'
     }, $true)
     . ([scriptblock]::Create($definition.Extent.Text))
+    $configurationDefinition = $dashboardAst.Find({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-DashboardConfigurationState'
+    }, $true)
+    . ([scriptblock]::Create($configurationDefinition.Extent.Text))
     $statusPath = 'fixture-status'; $supervisorPath = 'fixture-supervisor'; $ledgerPath = 'fixture-ledger'
+    $exitConfigPath = 'fixture-config'
     $runtimeDirectory = Join-Path ([IO.Path]::GetTempPath()) 'health-fixture-unwritten'
     $script:taskCache = @{ state = 'Running' }; $script:taskCacheAt = Get-Date
     $taskCacheSeconds = 60

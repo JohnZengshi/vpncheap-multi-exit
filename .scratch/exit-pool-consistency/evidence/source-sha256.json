@@ -1,0 +1,58 @@
+[
+  {
+    "path": "dashboard/app.js",
+    "sha256": "6f04905bb36f5c66b44680f0fdd4bba98ce1cc006f8d173acb5e1d1a181bd272"
+  },
+  {
+    "path": "dashboard/index.html",
+    "sha256": "0a98fe213f234e4a3473e01635ba145699f0f4274fe519ad1abff68c4bed6431"
+  },
+  {
+    "path": "dashboard/styles.css",
+    "sha256": "0c707f9617ab0a874325d95f4575766fac7a1810b7a65a45ac6e6f8877076768"
+  },
+  {
+    "path": "scripts/broker.ps1",
+    "sha256": "ed82e1f0e1a8e8d431be21492b38d2d8e422d53c92354030d9028275bdead355"
+  },
+  {
+    "path": "scripts/worker.ps1",
+    "sha256": "17d1f47f81345fc80c5bd6f36521dc4a00859bec893d146da977364ca41fe417"
+  },
+  {
+    "path": "scripts/dashboard.ps1",
+    "sha256": "2be1745286e1542eef295aaa0146cdf5d677bd9892cfd3ddf9218e71ddd578b3"
+  },
+  {
+    "path": "scripts/9router-sync.ps1",
+    "sha256": "669c02aee29a78fbeee84f59543d595c7f5282364bd8fb0519013d531aa23b44"
+  },
+  {
+    "path": "scripts/lib/broker-common.ps1",
+    "sha256": "3de0ad0b85f7005f0287059b9d1e8e10d6d8ebdb1561266ec33ee25abd8772e3"
+  },
+  {
+    "path": "scripts/lib/exit-catalog.ps1",
+    "sha256": "6dd39c170890009ce3a2029ee33324461adc690e86b13a81fadce8dc58e388f7"
+  },
+  {
+    "path": "scripts/lib/exit-control.ps1",
+    "sha256": "ae8ce853cd3a41df141d0709c4078043af791d20fa5f04c1195b3e954d57a05a"
+  },
+  {
+    "path": "scripts/lib/subscription-state.ps1",
+    "sha256": "490b2d7c42eba31714a2e5fff8a8a91f1650d40a8f1659b8a5c213edaccf3b91"
+  },
+  {
+    "path": "scripts/lib/9router.ps1",
+    "sha256": "180d5cd54cf403a30a63768b31f3ec36cc65eda217538fc8dde0b0db6bbc9ffe"
+  },
+  {
+    "path": "scripts/lib/9router-sync.ps1",
+    "sha256": "32ca044312ccd92c3cb53d50e3bbb801d2ab094e858998f59d57d34acf97506d"
+  },
+  {
+    "path": "scripts/lib/dashboard-pools.ps1",
+    "sha256": "c509b9763a636589a56f29d0794a82dda68b0bde62dd6a6fec25b3a1ba094e88"
+  }
+]

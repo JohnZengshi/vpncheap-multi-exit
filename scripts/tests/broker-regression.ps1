@@ -4,6 +4,7 @@ Set-StrictMode -Version Latest
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 . "$root/scripts/lib/broker-common.ps1"
 . "$root/scripts/lib/vpncheap-state.ps1"
+. "$root/scripts/lib/subscription-state.ps1"
 $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -21,6 +22,7 @@ $RuntimeDirectory = Join-Path ([IO.Path]::GetTempPath()) ("broker-test-" + [guid
 $leasePath = Join-Path $RuntimeDirectory 'port-leases.json'
 $brokerLogPath = Join-Path $RuntimeDirectory 'broker.log'
 $PortBase = 39001
+$script:configFailure = $null
 $script:failures = [System.Collections.Generic.List[string]]::new()
 function Assert-Test([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }

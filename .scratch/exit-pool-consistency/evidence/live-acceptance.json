@@ -1,0 +1,129 @@
+{
+  "runId": "a7801f8d6ce84c51bb84717e4a933615",
+  "startedAt": "2026-11-03T12:57:16.1501804Z",
+  "finishedAt": "2026-11-03T12:58:48.9989355Z",
+  "state": "passed",
+  "results": [
+    {
+      "at": "2026-11-03T12:57:48.6696374Z",
+      "name": "Same-name historical pool retained; dedicated current exit gets independent pool",
+      "passed": true
+    },
+    {
+      "at": "2026-11-03T12:57:54.9730147Z",
+      "name": "Actual configuration request rejects inactive Provider cancellation",
+      "passed": true
+    },
+    {
+      "at": "2026-11-03T12:57:57.5311537Z",
+      "name": "Rejected cancellation preserves live worker and binding",
+      "passed": true
+    },
+    {
+      "at": "2026-11-03T12:57:59.6756444Z",
+      "name": "Actual synchronization request accepted",
+      "passed": true
+    },
+    {
+      "at": "2026-11-03T12:58:05.0852779Z",
+      "name": "Real pool conflict shows partial success and preserves healthy exit",
+      "passed": true
+    },
+    {
+      "at": "2026-11-03T12:58:33.5777407Z",
+      "name": "Real retry completes without duplicate pools or worker restart",
+      "passed": true
+    }
+  ],
+  "providersUnchanged": true,
+  "cleanup": {
+    "poolsAbsent": true,
+    "providerAbsent": true
+  },
+  "cleanupErrors": [],
+  "initial": {
+    "brokerPid": 10136,
+    "pools": [
+      {
+        "id": "e4c41630-bfc3-48a7-81fb-f53fb2bea7ce",
+        "name": "vpncheap-Acceptance a7801f8d6ce84c51bb84717e4a933615-ae7cb5565af8c816",
+        "port": 39201,
+        "nodeHash": "ae7cb5565af8c816",
+        "relationState": "matched",
+        "boundConnectionCount": 0
+      },
+      {
+        "id": "5b25bcfa-0b72-41e4-b1ee-c18da64ef491",
+        "name": "vpncheap-Acceptance a7801f8d6ce84c51bb84717e4a933615",
+        "port": 39200,
+        "nodeHash": "historical",
+        "relationState": "historical",
+        "boundConnectionCount": 1
+      },
+      {
+        "id": "af5113a7-0dc4-4c7c-bdfb-459edcf249b2",
+        "name": "vpncheap-TW-台湾 Yuanlin 01-UDP",
+        "port": 39032,
+        "nodeHash": null,
+        "relationState": "external",
+        "boundConnectionCount": 0
+      },
+      {
+        "id": "f96eed2a-c7a2-4c7e-9869-4782005d3760",
+        "name": "vpncheap-TW-台湾 台北 02",
+        "port": 39031,
+        "nodeHash": null,
+        "relationState": "external",
+        "boundConnectionCount": 0
+      },
+      {
+        "id": "f3607894-b189-4496-ae05-7333d722d2e4",
+        "name": "vpncheap-TW-台湾 台北 01",
+        "port": 39026,
+        "nodeHash": null,
+        "relationState": "external",
+        "boundConnectionCount": 0
+      },
+      {
+        "id": "d5dd95da-9472-4290-a004-a7efb0294ffa",
+        "name": "vpncheap-TW-台湾 Chang-hua 01-UDP",
+        "port": 39030,
+        "nodeHash": null,
+        "relationState": "external",
+        "boundConnectionCount": 1
+      }
+    ],
+    "exit": [
+      {
+        "nodeHash": "ae7cb5565af8c816",
+        "port": 39201,
+        "workerPid": 26584,
+        "healthOk": true,
+        "poolId": "e4c41630-bfc3-48a7-81fb-f53fb2bea7ce"
+      }
+    ]
+  },
+  "failure": {
+    "state": "sync-error",
+    "exit": [
+      {
+        "nodeHash": "ae7cb5565af8c816",
+        "port": 39201,
+        "workerPid": 26584,
+        "healthOk": true
+      }
+    ]
+  },
+  "restored": {
+    "state": "completed",
+    "exit": [
+      {
+        "nodeHash": "ae7cb5565af8c816",
+        "port": 39201,
+        "workerPid": 26584,
+        "healthOk": true,
+        "poolId": "e4c41630-bfc3-48a7-81fb-f53fb2bea7ce"
+      }
+    ]
+  }
+}

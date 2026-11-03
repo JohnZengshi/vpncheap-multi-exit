@@ -1,0 +1,185 @@
+{
+  "poolCountBefore": 4,
+  "providers": [
+    {
+      "isActive": true,
+      "poolId": null,
+      "id": "91c7492f-19fd-4efb-bc32-3928baca6eba"
+    },
+    {
+      "isActive": false,
+      "poolId": null,
+      "id": "db2494f0-e5c2-4cdf-8243-9f1d0b673e7d"
+    },
+    {
+      "isActive": false,
+      "poolId": null,
+      "id": "0fe643c6-5ec0-4c52-af54-3ecce53627be"
+    },
+    {
+      "isActive": false,
+      "poolId": null,
+      "id": "c58f13a8-ea8b-4866-810f-3083964f8937"
+    },
+    {
+      "isActive": true,
+      "poolId": null,
+      "id": "fd0ba669-98e8-490d-a67a-d388403eb2d3"
+    },
+    {
+      "isActive": false,
+      "poolId": null,
+      "id": "503050c8-2029-4e2c-b34d-8475a372788b"
+    },
+    {
+      "isActive": true,
+      "poolId": null,
+      "id": "cd4ce698-af03-479b-8db9-9d31d92db014"
+    },
+    {
+      "isActive": false,
+      "poolId": "d5dd95da-9472-4290-a004-a7efb0294ffa",
+      "id": "6c934b16-1655-472f-a9cf-ac3b3272c89f"
+    },
+    {
+      "isActive": false,
+      "poolId": null,
+      "id": "10e1b050-6f47-4bf9-8374-b0fec3327786"
+    }
+  ],
+  "brokerPid": 27912,
+  "providersUnchanged": true,
+  "exits": [
+    {
+      "nodeHash": "350b0a0d34540f23",
+      "port": 39032,
+      "state": "unhealthy",
+      "healthOk": false,
+      "poolId": "af5113a7-0dc4-4c7c-bdfb-459edcf249b2",
+      "poolState": "matched",
+      "workerPid": 24696
+    },
+    {
+      "nodeHash": "46374c5446c05230",
+      "port": 39026,
+      "state": "healthy",
+      "healthOk": true,
+      "poolId": "f3607894-b189-4496-ae05-7333d722d2e4",
+      "poolState": "matched",
+      "workerPid": 28964
+    },
+    {
+      "nodeHash": "606d1cf544f4ceef",
+      "port": 39031,
+      "state": "healthy",
+      "healthOk": true,
+      "poolId": "f96eed2a-c7a2-4c7e-9869-4782005d3760",
+      "poolState": "matched",
+      "workerPid": 22456
+    },
+    {
+      "nodeHash": "7fe7a03531940a59",
+      "port": 39033,
+      "state": "unhealthy",
+      "healthOk": false,
+      "poolId": null,
+      "poolState": "missing",
+      "workerPid": 2452
+    }
+  ],
+  "pools": [
+    {
+      "id": "af5113a7-0dc4-4c7c-bdfb-459edcf249b2",
+      "name": "vpncheap-TW-台湾 Yuanlin 01-UDP",
+      "port": 39032,
+      "nodeHash": "350b0a0d34540f23",
+      "relationState": "matched",
+      "boundConnectionCount": 0,
+      "testStatus": "error",
+      "lastTestedAt": "2026-11-03T13:00:13.06Z"
+    },
+    {
+      "id": "f96eed2a-c7a2-4c7e-9869-4782005d3760",
+      "name": "vpncheap-TW-台湾 台北 02",
+      "port": 39031,
+      "nodeHash": "606d1cf544f4ceef",
+      "relationState": "matched",
+      "boundConnectionCount": 0,
+      "testStatus": "active",
+      "lastTestedAt": "2026-11-03T13:00:08.779Z"
+    },
+    {
+      "id": "f3607894-b189-4496-ae05-7333d722d2e4",
+      "name": "vpncheap-TW-台湾 台北 01",
+      "port": 39026,
+      "nodeHash": "46374c5446c05230",
+      "relationState": "matched",
+      "boundConnectionCount": 0,
+      "testStatus": "active",
+      "lastTestedAt": "2026-11-03T13:00:04.201Z"
+    },
+    {
+      "id": "d5dd95da-9472-4290-a004-a7efb0294ffa",
+      "name": "vpncheap-TW-台湾 Chang-hua 01-UDP",
+      "port": 39030,
+      "nodeHash": "75e743e4b6251412",
+      "relationState": "historical",
+      "boundConnectionCount": 1,
+      "testStatus": "active",
+      "lastTestedAt": "2026-11-03T10:29:25.336Z"
+    }
+  ],
+  "syncRuns": [
+    {
+      "acceptedAt": "2026-11-03T12:59:35.9094033Z",
+      "result": {
+        "state": "error",
+        "updatedAt": "2026-11-03T12:59:56.5991433Z",
+        "configId": "7a46e0a409044329bbb130ed5fe7690b",
+        "instanceId": "1aa1682a-74a8-4d47-b72f-1e4351054c81",
+        "actions": [
+          {
+            "poolId": "af5113a7-0dc4-4c7c-bdfb-459edcf249b2",
+            "action": "test-failed"
+          },
+          {
+            "action": "retained",
+            "reason": "bound-no-explicit-replacement",
+            "poolId": "d5dd95da-9472-4290-a004-a7efb0294ffa"
+          }
+        ]
+      }
+    },
+    {
+      "acceptedAt": "2026-11-03T12:59:56.9616656Z",
+      "result": {
+        "instanceId": "1aa1682a-74a8-4d47-b72f-1e4351054c81",
+        "actions": [
+          {
+            "action": "test-failed",
+            "poolId": "af5113a7-0dc4-4c7c-bdfb-459edcf249b2"
+          },
+          {
+            "poolId": "d5dd95da-9472-4290-a004-a7efb0294ffa",
+            "reason": "bound-no-explicit-replacement",
+            "action": "retained"
+          }
+        ],
+        "updatedAt": "2026-11-03T13:00:17.4739391Z",
+        "state": "error",
+        "configId": "7a46e0a409044329bbb130ed5fe7690b"
+      }
+    }
+  ],
+  "dashboard": {
+    "schemaVersion": 1,
+    "pid": 20500,
+    "port": 39080,
+    "url": "http://127.0.0.1:39080/",
+    "startedAt": "2026-11-03T13:03:36.3818979Z"
+  },
+  "processesUnchanged": true,
+  "checkedAt": "2026-11-03T13:00:26.6486008Z",
+  "poolCountAfter": 4,
+  "deploymentCapturedAt": "2026-11-03T13:04:33.3326403Z"
+}

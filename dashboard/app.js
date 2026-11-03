@@ -523,16 +523,7 @@ async function createPools(ports) {
       const label = (result && POOL_ERROR_LABELS[result.error]) || `HTTP ${response.status}`;
       throw new Error(result && result.port ? `${label}（端口 ${result.port}）` : label);
     }
-    const results = (result && Array.isArray(result.results)) ? result.results : [];
-    const failed = results.filter((item) => item.error);
-    const untested = results.filter((item) => !item.error && item.testStatus !== 'active');
-    if (failed.length) {
-      showToast(`${failed.length} 个代理池创建失败`);
-    } else if (untested.length) {
-      showToast(`已创建 ${results.length} 个，${untested.length} 个测试未通过`);
-    } else {
-      showToast(`已创建 ${results.length} 个代理池，测试通过`);
-    }
+    showToast(result && result.ok ? '代理池已对应，测试通过' : '代理池处理未完成，请查看同步结果并重试');
   } catch (error) {
     showToast(error && error.message ? error.message : '创建失败');
   } finally {
@@ -592,25 +583,30 @@ function buildExitRow(exit, poolPorts) {
   row.dataset.tone = tone;
 
   const nodeCell = make('td', 'cell-node');
-  nodeCell.appendChild(make('div', 'node-name', exit.nodeName || '未命名节点'));
+  nodeCell.appendChild(make('div', 'node-name', `配置：${exit.configuredNodeName || '原配置待核对'}`));
   nodeCell.appendChild(make('div', 'node-hash', exit.nodeHash || '—'));
+  nodeCell.appendChild(cellSub(`实际：${exit.activeNodeName || '待确认'}${exit.fallbackActive ? ' · 备用' : ''}`));
+  nodeCell.appendChild(make('div', 'cell-sub mobile-exit-state', `出口状态：${exitStateLabel(exit)}`));
   row.appendChild(nodeCell);
 
   const endpointCell = make('td');
   const endpoint = exit.endpoint || (exit.port ? `127.0.0.1:${exit.port}` : '—');
   endpointCell.appendChild(chip(endpoint, null, 'mono'));
-  if (poolPorts && Number(exit.port) > 0 && !poolPorts.has(Number(exit.port))) {
+  if (poolPorts && Number(exit.port) > 0 && (exit.poolState ? exit.poolState !== 'matched' : !poolPorts.has(Number(exit.port)))) {
     const line = make('div', 'pool-missing');
     line.appendChild(badge('无代理池', 'warn'));
     const planItem = poolPlanByPort().get(Number(exit.port));
     if (planItem && planItem.action === 'create') {
       line.appendChild(poolCreateButton(Number(exit.port)));
     } else if (planItem && planItem.action === 'conflict') {
-      line.appendChild(badge('名称冲突', 'bad'));
+      line.appendChild(badge('对应冲突，待核对', 'bad'));
+      line.title = planItem.conflictReason || '';
     }
     endpointCell.appendChild(line);
+    if (!exit.healthOk) endpointCell.appendChild(cellSub('出口未就绪，恢复后自动同步池'));
   }
   endpointCell.appendChild(cellSub('mixed 入口'));
+  if (exit.poolName) endpointCell.appendChild(cellSub(`池：${exit.poolName}`));
   row.appendChild(endpointCell);
 
   const regionCell = make('td');
@@ -831,7 +827,7 @@ function renderCandidateList() {
     }
     return [candidate.nodeName, candidate.country, candidate.protocol, candidate.nodeHash]
       .some((value) => String(value || '').toLowerCase().includes(query));
-  });
+  }).sort((left, right) => Number(right.category === 'existing' || right.selected) - Number(left.category === 'existing' || left.selected));
 
   setText('candidate-summary', `${filtered.length} / ${candidates.length} · 已选 ${config.selected.size}`);
   setText('config-subtitle', `当前 ${config.maxExits} 个并行出口 · 候选 ${candidates.length} 个`);
@@ -843,11 +839,21 @@ function renderCandidateList() {
   }
 
   const fragment = document.createDocumentFragment();
+  let group = '';
   filtered.forEach((candidate) => {
+    const nextGroup = candidate.category === 'existing' || candidate.selected ? '已有出口' : '可新增节点';
+    if (group !== nextGroup) {
+      fragment.appendChild(make('div', 'candidate-group', nextGroup));
+      group = nextGroup;
+    }
     const hash = String(candidate.nodeHash || '');
     const checked = config.selected.has(hash);
     const atLimit = !checked && config.selected.size >= config.maxExits;
-    const disabled = config.auto || atLimit;
+    const reason = candidate.disabledReason === 'node-occupied'
+      ? `已被出口 ${(candidate.occupiedBy || []).map(value => shortId(value)).join('、')} 占用`
+      : candidate.disabledReason === 'mapping-review' ? '待核对映射'
+      : config.auto ? '自动选择' : atLimit ? '数量已满' : '';
+    const disabled = config.auto || (Boolean(reason) && !checked);
     const row = make('label', 'candidate-row');
     row.classList.toggle('is-selected', checked);
     row.classList.toggle('is-disabled', disabled && !checked);
@@ -856,7 +862,7 @@ function renderCandidateList() {
     input.type = 'checkbox';
     input.checked = checked;
     input.disabled = disabled;
-    input.setAttribute('aria-label', candidate.nodeName || hash);
+    input.setAttribute('aria-label', `${candidate.nodeName || '节点'} ${shortId(hash)}`);
     input.addEventListener('change', () => {
       if (input.checked) {
         config.selected.add(hash);
@@ -868,7 +874,7 @@ function renderCandidateList() {
     });
 
     const name = make('span', 'candidate-name', candidate.nodeName || shortId(hash, 12));
-    const metaText = [candidate.country, candidate.protocol, candidate.needsReview ? '待核对映射' : ''].filter(Boolean).join(' · ');
+    const metaText = [candidate.country, candidate.protocol, shortId(hash), reason || (candidate.needsReview ? '待核对映射' : '')].filter(Boolean).join(' · ');
     const meta = make('span', 'candidate-meta', metaText || shortId(hash, 12));
     row.append(input, name, meta);
     fragment.appendChild(row);
@@ -962,11 +968,17 @@ async function applyExitConfig(event) {
         'selection-exceeds-max': '选择数量超过并行出口数',
         'unknown-node': '候选节点已变化，请重新打开',
         'invalid-max-exits': '出口数量无效'
+        , 'node-unavailable': '节点已被占用或映射待核对，请刷新后选择'
+        , 'exit-has-bindings': '出口仍有连接绑定，请先迁移或解除绑定'
+        , 'binding-check-unavailable': '无法核验绑定，保留现有出口，请稍后重试'
+        , 'broker-status-not-safe': 'Broker 状态不可用或已过期'
+        , 'config-change-running': '其他配置正在保存，请稍后重试'
       };
-      throw new Error((result && labels[result.error]) || `HTTP ${response.status}`);
+      const affected = result && Array.isArray(result.affected) ? result.affected.map(item => `${providerLabel(item.provider)} (${item.port})`).join('、') : '';
+      throw new Error(((result && labels[result.error]) || `HTTP ${response.status}`) + (affected ? `：${affected}` : ''));
     }
     closeConfigDialog();
-    showToast('出口配置已应用');
+    showToast('配置已保存，等待出口调整与代理池同步');
     window.setTimeout(() => refresh(), 1200);
   } catch (error) {
     setConfigError(error && error.message ? error.message : '应用失败');
@@ -1032,6 +1044,47 @@ function renderStats() {
 }
 
 function renderWarnings() {
+  const reasons = {
+    'exit-has-bindings': '出口仍有绑定，请先迁移或解除绑定',
+    'binding-check-unavailable': '无法核验最新绑定，保留现有出口',
+    'config-selection-changed': '配置已变化，请重新核对',
+    'node-unavailable': '节点已被占用或映射待核对',
+    'unknown-node': '候选节点已变化，请重新选择',
+    'owned-address-edited': '托管池地址被修改，请核对',
+    'ambiguous-ownership': '存在多个归属记录，请核对',
+    'duplicate-port': '多个代理池使用同一入口',
+    'port-not-owned': '入口已被其他代理池占用',
+    'name-not-owned': '预期池名已被外部对象占用',
+    'create-outcome-unknown': '创建结果不确定，请核对远端池与台账',
+    'create-failed': '代理池创建失败',
+    'test-failed': '代理池测试未通过',
+    'replacement-test-failed': '迁移目标测试未通过，保留原池',
+    'replacement-unavailable': '迁移目标不可用，保留原池'
+  };
+  const progress = byId('configuration-progress');
+  const configuration = ui.data && ui.data.configuration;
+  if (progress) {
+    const labels = { saved: '配置已保存', adjusting: '配置已保存，出口调整中', 'exit-error': '出口调整未完成',
+      syncing: '出口已生效，代理池同步中', 'sync-error': '出口已生效，代理池同步失败', completed: '出口与代理池已完成对应' };
+    progress.hidden = !configuration || !labels[configuration.state];
+    if (!progress.hidden) {
+      progress.replaceChildren(make('span', null, labels[configuration.state]));
+      if (configuration.reason) progress.appendChild(cellSub(reasons[configuration.reason] || configuration.reason));
+      if (configuration.state === 'exit-error' && ui.data.exits) {
+        ui.data.exits.filter(exit => !exit.healthOk).forEach(exit =>
+          progress.appendChild(cellSub(`${exit.endpoint || exit.nodeHash} · ${exitStateLabel(exit)}`)));
+      }
+      const failures = configuration.sync && Array.isArray(configuration.sync.actions) ? configuration.sync.actions
+        .filter(item => ['conflict', 'create-failed', 'test-failed'].includes(item.action) || /failed|unavailable/.test(item.reason || '')) : [];
+      failures.forEach(item => progress.appendChild(cellSub(`${item.port || shortId(item.poolId || item.nodeHash)} · ${reasons[item.reason || item.action] || item.reason || item.action}`)));
+      if (configuration.state === 'sync-error') {
+        const retry = make('button', 'link-btn configuration-retry', '重试代理池同步');
+        retry.type = 'button';
+        retry.addEventListener('click', syncPools);
+        progress.appendChild(retry);
+      }
+    }
+  }
   const labels = new Set();
   if (ui.data && Array.isArray(ui.data.warnings)) {
     ui.data.warnings.forEach((warning) => labels.add(WARNING_LABELS[warning] || warning));
@@ -1144,6 +1197,9 @@ function renderPools() {
       boundText = `${pool.boundConnectionCount} 个连接绑定`;
     }
     main.appendChild(cellSub(boundText));
+    if (pool.nodeHash) main.appendChild(cellSub(`出口 ${shortId(pool.nodeHash)}`));
+    if (pool.reason) main.appendChild(cellSub(pool.reason));
+    if (pool.relationState === 'historical') main.appendChild(cellSub('历史入口的测试结果不代表当前出口健康'));
     row.appendChild(main);
 
     const endpoint = make('div', 'endpoint-line');
@@ -1155,6 +1211,11 @@ function renderPools() {
     const badges = make('div', 'badge-row');
     const testTone = pool.testStatus === 'active' ? 'ok' : (pool.testStatus ? 'warn' : null);
     badges.appendChild(badge(pool.testStatus === 'active' ? '测试通过' : (pool.testStatus || '未测试'), testTone));
+    if (pool.relationState === 'historical') badges.appendChild(badge('历史保留', 'warn'));
+    if (pool.relationState === 'conflict') badges.appendChild(badge('对应冲突', 'bad'));
+    if (pool.relationState === 'matched') badges.appendChild(badge('已对应', 'ok'));
+    badges.title = `池检测：${pool.lastTestedAt ? formatClock(pool.lastTestedAt) : '时间未记录'}；出口健康单独显示`;
+    badges.appendChild(cellSub(`池检测 ${pool.lastTestedAt ? formatClock(pool.lastTestedAt) : '时间未记录'}`));
     if (pool.strictProxy) {
       badges.appendChild(badge('strict', null));
     }
@@ -1207,6 +1268,10 @@ function renderConnections() {
     row.appendChild(main);
 
     const poolRef = make('div', `pool-ref${connection.poolId ? '' : ' is-unbound'}`, connection.poolId ? (connection.poolName || '已绑定') : '未绑定');
+    if (connection.poolId) {
+      poolRef.appendChild(cellSub([connection.endpoint, connection.activeNodeName].filter(Boolean).join(' · ') || '入口或实际节点待核对'));
+      poolRef.appendChild(cellSub(connection.routeState || '关系待核对'));
+    }
     row.appendChild(poolRef);
 
     const meta = make('div', 'conn-meta');

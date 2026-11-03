@@ -1,4 +1,5 @@
 Set-StrictMode -Version Latest
+. "$PSScriptRoot/exit-catalog.ps1"
 
 function ConvertTo-SubscriptionTimestamp {
     param([AllowNull()][object]$Value)
@@ -71,7 +72,7 @@ function Resolve-ExitNodeReplacement {
         (Get-JsonProperty $_ 'protocol') -eq (Get-JsonProperty $Previous 'protocol') -and
         (Get-JsonProperty $_ 'country_code') -eq (Get-JsonProperty $Previous 'country_code')
     })
-    foreach ($key in @('SourceHash', 'EndpointHash', 'NameKey')) {
+    foreach ($key in @('SourceHash', 'EndpointHash')) {
         $matches = @($eligible | Where-Object { (Get-ExitNodeIdentity $_).$key -eq $identity.$key })
         if ($matches.Count -eq 1) { return $matches[0] }
         if ($matches.Count -gt 1) { return $null }
@@ -90,11 +91,18 @@ function Save-ExitNodeSnapshot {
         [Nullable[bool]]$FallbackActive = $null)
     $path = Get-ExitSnapshotPath $RuntimeDirectory $NodeHash
     [IO.Directory]::CreateDirectory((Split-Path -Parent $path)) | Out-Null
+    $saved = Read-ProtectedSubscriptionFile $path
     if ($null -eq $FallbackActive) {
-        $saved = Read-ProtectedSubscriptionFile $path
         $FallbackActive = [bool](Get-OptionalProperty $saved 'fallbackActive')
     }
-    Write-ProtectedSubscriptionFile -Path $path -Value @{ node = $Node; fallbackActive = [bool]$FallbackActive }
+    $configured = Get-OptionalProperty $saved 'configuredNode'
+    if ($null -eq $configured -and $null -ne $saved -and -not [bool](Get-OptionalProperty $saved 'fallbackActive')) {
+        $configured = $saved.node
+    }
+    if (-not $FallbackActive) { $configured = $Node }
+    Write-ProtectedSubscriptionFile -Path $path -Value @{
+        node = $Node; configuredNode = $configured; fallbackActive = [bool]$FallbackActive
+    }
 }
 
 function Get-ExplicitExitReplacement {

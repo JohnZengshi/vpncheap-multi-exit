@@ -5,7 +5,9 @@ param(
 
     [int]$Port = 39080,
 
-    [string]$BrokerTaskName = 'vpncheap-multi-exit-broker'
+    [string]$BrokerTaskName = 'vpncheap-multi-exit-broker',
+
+    [string]$RuntimeDirectory = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,7 +16,8 @@ Set-StrictMode -Version Latest
 $scriptDirectory = $PSScriptRoot
 $projectRoot = Split-Path -Parent $scriptDirectory
 $dashboardDirectory = Join-Path $projectRoot 'dashboard'
-$runtimeDirectory = Join-Path $projectRoot 'runtime'
+if (-not $RuntimeDirectory) { $RuntimeDirectory = Join-Path $projectRoot 'runtime' }
+$runtimeDirectory = [IO.Path]::GetFullPath($RuntimeDirectory)
 $statusPath = Join-Path $runtimeDirectory 'status.json'
 $supervisorPath = Join-Path $runtimeDirectory 'supervisor.json'
 $ledgerPath = Join-Path $runtimeDirectory '9router-applied.json'
@@ -34,12 +37,15 @@ $script:taskCache = $null
 $script:taskCacheAt = [datetime]::MinValue
 $script:poolSyncProcess = $null
 $script:poolSyncLaunchAt = [datetime]::MinValue
+$script:poolSyncFingerprint = ''
 
 . "$scriptDirectory\lib\broker-common.ps1"
 . "$scriptDirectory\lib\9router.ps1"
+. "$scriptDirectory\lib\9router-sync.ps1"
 . "$scriptDirectory\lib\dashboard-pools.ps1"
 . "$scriptDirectory\lib\vpncheap-state.ps1"
 . "$scriptDirectory\lib\subscription-state.ps1"
+. "$scriptDirectory\lib\exit-control.ps1"
 
 function Write-DashboardLog {
     param(
@@ -52,7 +58,7 @@ function Write-DashboardLog {
 
 function Start-DashboardPoolSync {
     if ($null -ne $script:poolSyncProcess -and -not $script:poolSyncProcess.HasExited) { return }
-    $script:poolSyncProcess = Start-DetachedPowerShell -ScriptPath "$scriptDirectory\9router-sync.ps1" -WorkingDirectory $projectRoot
+    $script:poolSyncProcess = Start-DetachedPowerShell -ScriptPath "$scriptDirectory\9router-sync.ps1" -ScriptArguments @('-RuntimeDirectory', $runtimeDirectory) -WorkingDirectory $projectRoot
     $script:poolSyncLaunchAt = Get-Date
 }
 
@@ -271,6 +277,10 @@ function Get-DashboardSnapshot {
                 country = [string](Get-OptionalProperty -Object $_ -Name 'country')
                 selected = [bool](Get-OptionalProperty -Object $_ -Name 'selected')
                 needsReview = [bool](Get-OptionalProperty -Object $_ -Name 'needsReview')
+                configuredNodeName = Get-OptionalProperty $_ 'configuredNodeName'
+                configuredNodeHash = Get-OptionalProperty $_ 'configuredNodeHash'
+                sourceNodeHash = Get-OptionalProperty $_ 'sourceNodeHash'
+                category = Get-OptionalProperty $_ 'category'
             }
         })
         if (-not [string]::IsNullOrWhiteSpace([string](Get-OptionalProperty -Object $status -Name 'refreshErrorHash'))) {
@@ -300,6 +310,8 @@ function Get-DashboardSnapshot {
             [ordered]@{
                 nodeName = [string](Get-OptionalProperty -Object $_ -Name 'nodeName')
                 nodeHash = $nodeHash
+                configuredNodeName = Get-OptionalProperty $_ 'configuredNodeName'
+                configuredNodeHash = Get-OptionalProperty $_ 'configuredNodeHash'
                 port = [int](Get-OptionalProperty -Object $_ -Name 'port')
                 endpoint = '127.0.0.1:{0}' -f [int](Get-OptionalProperty -Object $_ -Name 'port')
                 country = [string](Get-OptionalProperty -Object $_ -Name 'country')
@@ -342,9 +354,47 @@ function Get-DashboardSnapshot {
         }
     }
 
+    foreach ($candidate in $candidateRows) {
+        $owners = @($exitRows | Where-Object {
+            $_.nodeHash -ne $candidate.nodeHash -and $candidate.sourceNodeHash -and
+            $_.activeNodeHash -eq $candidate.sourceNodeHash
+        })
+        $candidate['occupiedBy'] = @($owners | ForEach-Object { $_.nodeHash })
+        $candidate['disabledReason'] = if ($owners.Count) { 'node-occupied' } elseif ($candidate.needsReview -and -not $candidate.selected) { 'mapping-review' } else { $null }
+    }
+
+    foreach ($pool in $poolRows) {
+        $raw = @($pools | Where-Object id -eq $pool.id)[0]
+        $entries = @($ledgerPools | Where-Object poolId -eq $pool.id)
+        $pool['nodeHash'] = if ($entries.Count -eq 1) { $entries[0].nodeHash } else { $null }
+        $matching = @($exitRows | Where-Object { $_.nodeHash -eq $pool.nodeHash -and $_.port -eq $pool.port })
+        $pool['relationState'] = if (-not $pool.managed) { 'external' } elseif ($entries.Count -ne 1) { 'conflict' }
+            elseif ((ConvertTo-NineRouterUrlKey $raw.proxyUrl) -ne "http://127.0.0.1:$($entries[0].port)") { 'conflict' }
+            elseif ($matching.Count -eq 1) { 'matched' } else { 'historical' }
+        $pool['boundConnectionCount'] = @($connectionRows | Where-Object poolId -eq $pool.id).Count
+        $pool['reason'] = if ($pool.relationState -eq 'historical' -and $pool.boundConnectionCount) { '仍有绑定，保留历史池' }
+            elseif ($pool.relationState -eq 'historical') { '历史池，等待核验清理条件' }
+            elseif ($pool.relationState -eq 'conflict') { '归属或地址冲突，待核对' } else { $null }
+        $pool['lastTestedAt'] = Get-OptionalProperty $raw 'lastTestedAt'
+    }
+    foreach ($exit in $exitRows) {
+        $matches = @($poolRows | Where-Object { $_.nodeHash -eq $exit.nodeHash -and $_.port -eq $exit.port -and $_.relationState -eq 'matched' })
+        $exit['poolId'] = if ($matches.Count -eq 1) { $matches[0].id } else { $null }
+        $exit['poolName'] = if ($matches.Count -eq 1) { $matches[0].name } else { $null }
+        $exit['poolState'] = if ($matches.Count -eq 1) { 'matched' } elseif ($matches.Count -gt 1) { 'conflict' } else { 'missing' }
+    }
+    foreach ($connection in $connectionRows) {
+        $pool = @($poolRows | Where-Object id -eq $connection.poolId)
+        $exit = @($exitRows | Where-Object { $_.poolId -and $_.poolId -eq $connection.poolId })
+        $connection['endpoint'] = if ($pool.Count -eq 1) { $pool[0].endpoint } else { $null }
+        $connection['activeNodeName'] = if ($exit.Count -eq 1) { $exit[0].activeNodeName } else { $null }
+        $connection['routeState'] = if (-not $connection.poolId) { '未绑定' } elseif ($pool.Count -ne 1) { '代理池缺失' }
+            elseif ($pool[0].relationState -eq 'external') { '外部代理池' } elseif ($exit.Count -ne 1) { '未对应当前出口' } else { '关系完整' }
+    }
+
     $poolPlan = @()
     if ($brokerAlive -and $brokerState -eq 'running' -and -not $warnings.Contains('nine-router-unavailable')) {
-        $poolPlan = @(Get-DashboardPoolPlan -Status $status -Pools $pools -Connections $connections)
+        $poolPlan = @(Get-DashboardPoolPlan -Status $status -Pools $pools -Connections $connections -Ledger $ledger)
     }
 
     $boundConnections = @($connectionRows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.poolId) })
@@ -352,6 +402,7 @@ function Get-DashboardSnapshot {
 
     return [ordered]@{
         generatedAt = (Get-Date).ToUniversalTime().ToString('o')
+        configuration = Get-DashboardConfigurationState -Status $status -Exits $exitRows
         broker = [ordered]@{
             state = $brokerState
             pid = Get-OptionalProperty -Object $status -Name 'brokerPid'
@@ -393,6 +444,35 @@ function Get-DashboardSnapshot {
         }
         warnings = $warnings.ToArray()
     }
+}
+
+function Get-DashboardConfigurationState {
+    param($Status, [object[]]$Exits)
+    $config = Read-JsonFile $exitConfigPath
+    $requested = [string](Get-OptionalProperty $config 'configId')
+    $applied = [string](Get-OptionalProperty $Status 'appliedConfigId')
+    $failure = Get-OptionalProperty $Status 'configError'
+    $sync = Read-JsonFile (Join-Path $runtimeDirectory '9router-sync-status.json')
+    $state = 'untracked'
+    $reason = $null
+    if ($requested) {
+        if (-not (Test-ProcessAlive (Get-OptionalProperty $Status 'brokerPid'))) { $state = 'exit-error'; $reason = 'Broker 未运行' }
+        elseif ((Get-OptionalProperty $failure 'configId') -eq $requested) { $state = 'exit-error'; $reason = Get-OptionalProperty $failure 'error' }
+        elseif ($requested -ne $applied) { $state = 'adjusting' }
+        elseif (@($Exits | Where-Object { $_.state -in @('failed', 'degraded', 'port-conflict', 'stopped', 'unhealthy') }).Count) { $state = 'exit-error'; $reason = '部分出口未就绪' }
+        elseif (-not $Exits.Count -or @($Exits | Where-Object { -not $_.healthOk }).Count) { $state = 'adjusting' }
+        elseif ((Get-OptionalProperty $sync 'configId') -ne $requested -or
+            (Get-OptionalProperty $sync 'instanceId') -ne (Get-OptionalProperty $Status 'instanceId')) { $state = 'syncing' }
+        elseif ($sync.state -eq 'error' -or ($sync.state -eq 'running' -and -not (Test-ProcessAlive (Get-OptionalProperty $sync 'pid')))) {
+            $state = 'sync-error'; $reason = '出口已生效，代理池同步失败'
+        }
+        elseif (@($Exits | Where-Object { $_.poolState -ne 'matched' }).Count) { $state = 'syncing' }
+        elseif ($sync.state -eq 'completed') { $state = 'completed' }
+        else { $state = 'syncing' }
+    }
+    return @{ configId = $requested; appliedConfigId = $applied; state = $state; reason = $reason
+        affected = @(Get-OptionalProperty $failure 'affected' | Where-Object { $null -ne $_ })
+        sync = $sync }
 }
 
 function Get-DashboardExitIpExport {
@@ -658,76 +738,8 @@ function Invoke-DashboardRequest {
                 return
             }
 
-            $status = Read-JsonFile -Path $statusPath
-            if ($null -eq $status) {
-                Send-DashboardResponse -Stream $stream -StatusCode 409 -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"error":"broker-status-missing"}'))
-                return
-            }
-
-            $knownHashes = New-Object 'System.Collections.Generic.HashSet[string]'
-            foreach ($candidate in @(Get-OptionalProperty -Object $status -Name 'candidates')) {
-                $knownHashes.Add([string](Get-OptionalProperty -Object $candidate -Name 'nodeHash')) | Out-Null
-            }
-            if ($knownHashes.Count -eq 0) {
-                Send-DashboardResponse -Stream $stream -StatusCode 409 -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"error":"candidate-list-unavailable"}'))
-                return
-            }
-
-            $maxExitsValue = Get-OptionalProperty -Object $request -Name 'maxExits'
-            if ($null -eq $maxExitsValue) {
-                $maxExitsValue = Get-OptionalProperty -Object $status -Name 'maxExits'
-            }
-            $maxExits = 0
-            if ($null -eq $maxExitsValue -or -not [int]::TryParse([string]$maxExitsValue, [ref]$maxExits) -or $maxExits -lt 1 -or $maxExits -gt 64) {
-                Send-DashboardResponse -Stream $stream -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"error":"invalid-max-exits"}'))
-                return
-            }
-
-            $nodeHashes = New-Object System.Collections.Generic.List[string]
-            $seenHashes = New-Object 'System.Collections.Generic.HashSet[string]'
-            foreach ($item in @(Get-OptionalProperty -Object $request -Name 'nodeHashes')) {
-                $hash = ([string]$item).Trim().ToLowerInvariant()
-                if ([string]::IsNullOrWhiteSpace($hash)) {
-                    continue
-                }
-                if ($hash -notmatch '^[0-9a-f]{8,64}$' -or -not $knownHashes.Contains($hash)) {
-                    Send-DashboardResponse -Stream $stream -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"error":"unknown-node"}'))
-                    return
-                }
-                if ($seenHashes.Add($hash)) {
-                    $nodeHashes.Add($hash) | Out-Null
-                }
-            }
-            if ($nodeHashes.Count -gt $maxExits) {
-                Send-DashboardResponse -Stream $stream -StatusCode 400 -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"error":"selection-exceeds-max"}'))
-                return
-            }
-
-            $selectionMode = if ($nodeHashes.Count -gt 0) { 'manual' } else { 'auto' }
-            $existingConfig = Read-JsonFile -Path $exitConfigPath
-            $newConfig = [ordered]@{
-                schemaVersion = 1
-                maxExits = $maxExits
-                selectionMode = $selectionMode
-                nodeHashes = @($nodeHashes)
-                updatedAt = (Get-Date).ToUniversalTime().ToString('o')
-            }
-            $replacements = Get-OptionalProperty -Object $existingConfig -Name 'replacements'
-            if ($null -ne $replacements) {
-                $newConfig['replacements'] = $replacements
-            }
-            $autoFallback = Get-OptionalProperty $existingConfig 'autoFallback'
-            if ($null -ne $autoFallback) { $newConfig['autoFallback'] = [bool]$autoFallback }
-            Write-JsonFileAtomic -Path $exitConfigPath -Value $newConfig
-            Write-DashboardLog -Message ('exit-config mode={0} max={1} selected={2}' -f $selectionMode, $maxExits, $nodeHashes.Count)
-
-            $payload = [ordered]@{
-                ok = $true
-                maxExits = $maxExits
-                selectionMode = $selectionMode
-                nodeHashes = @($nodeHashes)
-            } | ConvertTo-Json -Depth 10 -Compress
-            Send-DashboardResponse -Stream $stream -StatusCode 202 -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($payload))
+            $outcome = Invoke-ExitConfigChange -RuntimeDirectory $runtimeDirectory -Request $request
+            Send-DashboardJson -Stream $stream -StatusCode $outcome.code -Value $outcome.body
             return
         }
 
@@ -825,10 +837,24 @@ function Invoke-DashboardServer {
 
     try {
         while ($true) {
-            if (((Get-Date) - $script:poolSyncLaunchAt).TotalSeconds -ge 300) {
-                try { Start-DashboardPoolSync }
-                catch { Write-DashboardLog 'pool-sync-launch-failed' }
+            try {
+                $latest = Read-JsonFile $statusPath
+                $config = Read-JsonFile $exitConfigPath
+                $sync = Read-JsonFile (Join-Path $runtimeDirectory '9router-sync-status.json')
+                $appliedId = [string](Get-OptionalProperty $latest 'appliedConfigId')
+                $needsSync = $appliedId -and $appliedId -eq (Get-OptionalProperty $config 'configId') -and
+                    $appliedId -ne (Get-OptionalProperty $sync 'configId')
+                $readyExits = @(Get-OptionalProperty $latest 'exits' | Where-Object { $null -ne $_ -and $_.healthOk -and $_.state -eq 'healthy' } |
+                    ForEach-Object { "$($_.nodeHash):$($_.port)" } | Sort-Object) -join '|'
+                $fingerprint = "$appliedId|$(Get-OptionalProperty $latest 'instanceId')|$readyExits"
+                $elapsed = ((Get-Date) - $script:poolSyncLaunchAt).TotalSeconds
+                $syncIdle = $null -eq $script:poolSyncProcess -or $script:poolSyncProcess.HasExited
+                if ($syncIdle -and ($elapsed -ge 300 -or (($needsSync -or $fingerprint -ne $script:poolSyncFingerprint) -and $elapsed -ge 5))) {
+                    try { Start-DashboardPoolSync; $script:poolSyncFingerprint = $fingerprint }
+                    catch { Write-DashboardLog 'pool-sync-launch-failed' }
+                }
             }
+            catch { Write-DashboardLog ('pool-sync-schedule-error type={0} id={1} line={2}' -f $_.Exception.GetType().Name, $_.FullyQualifiedErrorId, $_.InvocationInfo.ScriptLineNumber) }
             if (-not $listener.Pending()) {
                 Start-Sleep -Milliseconds 100
                 continue
@@ -866,7 +892,7 @@ function Start-Dashboard {
 
     $process = Start-DetachedPowerShell `
         -ScriptPath $PSCommandPath `
-        -ScriptArguments @('-Action', 'run', '-Port', [string]$Port, '-BrokerTaskName', $BrokerTaskName) `
+        -ScriptArguments @('-Action', 'run', '-Port', [string]$Port, '-BrokerTaskName', $BrokerTaskName, '-RuntimeDirectory', $runtimeDirectory) `
         -WorkingDirectory $projectRoot
     $healthUrl = 'http://127.0.0.1:{0}/api/health' -f $Port
     $deadline = (Get-Date).AddSeconds(15)

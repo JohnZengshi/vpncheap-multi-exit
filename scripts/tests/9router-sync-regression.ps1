@@ -10,6 +10,25 @@ $runtime = Join-Path ([IO.Path]::GetTempPath()) ('pool-sync-test-' + [guid]::New
 function New-NineRouterClient { return @{} }
 function Get-NineRouterPools { param($Client) return $script:pools }
 function Get-NineRouterConnections { param($Client) return $script:connections }
+function New-NineRouterPool {
+    param($Client, $Name, $ProxyUrl)
+    if ($script:createMode -eq 'reject') {
+        $failure = [InvalidOperationException]::new('fixture-rejection')
+        $failure.Data['statusCode'] = $script:rejectStatus
+        throw $failure
+    }
+    $pool = [pscustomobject]@{ id = 'created'; name = $Name; proxyUrl = $ProxyUrl; strictProxy = $true; isActive = $true; testStatus = 'unknown' }
+    $script:pools += $pool
+    if ($script:createMode -eq 'lost-response') { throw 'fixture-response-lost' }
+    return $pool
+}
+function Set-NineRouterPool { param($Client, $PoolId, $StrictProxy, $IsActive) }
+function Invoke-NineRouterRequest {
+    param($Client, $Method, $Path, $Body)
+    $pool = @($script:pools | Where-Object { $Path -eq "/api/proxy-pools/$($_.id)" })[0]
+    $pool.proxyUrl = $Body.proxyUrl
+    if ($script:repairResponseLost) { throw 'fixture-repair-response-lost' }
+}
 function Test-TcpPortListening { param($Port) return $Port -in $script:listening }
 function Test-NineRouterPool {
     param($Client, $PoolId)
@@ -34,6 +53,9 @@ function Reset-Fixture {
     $script:listening = @(39026)
     $script:testStatus = 'active'
     $script:bindFailure = $false
+    $script:createMode = 'normal'
+    $script:rejectStatus = 422
+    $script:repairResponseLost = $false
     $script:status = [pscustomobject]@{
         state = 'running'; brokerPid = $PID; instanceId = 'fixture'
         updatedAt = (Get-Date).ToUniversalTime().ToString('o')
@@ -59,6 +81,57 @@ function Assert-True($Value, $Message) {
     Write-Output "PASS $Message"
 }
 try {
+    Reset-Fixture
+    $script:pools = @($script:pools | Where-Object id -ne 'new')
+    $script:createMode = 'lost-response'
+    $result = Invoke-NineRouterSync $runtime -NoCleanup
+    Assert-True ($result.state -eq 'error') 'Lost creation response reports partial failure'
+    $script:createMode = 'normal'
+    $result = Invoke-NineRouterSync $runtime -NoCleanup
+    Assert-True ($result.state -eq 'completed' -and @($script:pools | Where-Object id -eq 'created').Count -eq 1) 'Retry reconciles uncertain creation without duplicate pools'
+
+    Reset-Fixture
+    $script:pools = @($script:pools | Where-Object id -ne 'new')
+    $script:createMode = 'reject'
+    $result = Invoke-NineRouterSync $runtime -NoCleanup
+    $script:createMode = 'normal'
+    $result = Invoke-NineRouterSync $runtime -NoCleanup
+    Assert-True ($result.state -eq 'completed' -and @($script:pools | Where-Object id -eq 'created').Count -eq 1) 'Definite creation rejection can recover on retry'
+
+    Reset-Fixture
+    $script:pools = @($script:pools | Where-Object id -ne 'new')
+    $script:createMode = 'reject'; $script:rejectStatus = 429
+    $result = Invoke-NineRouterSync $runtime -NoCleanup
+    $script:createMode = 'normal'
+    $result = Invoke-NineRouterSync $runtime -NoCleanup
+    Assert-True ($result.state -eq 'completed') 'Rate-limited creation can recover on retry'
+
+    Reset-Fixture
+    $script:status.exits[0].port = 39033
+    Write-JsonFileAtomic "$runtime/status.json" $script:status
+    $script:repairResponseLost = $true
+    try { Invoke-NineRouterSync $runtime -NoCleanup | Out-Null } catch { }
+    $script:repairResponseLost = $false
+    $result = Invoke-NineRouterSync $runtime -NoCleanup
+    $ledger = Read-JsonFile "$runtime/9router-applied.json"
+    Assert-True ($result.state -eq 'completed' -and @($ledger.pools | Where-Object poolId -eq 'new')[0].port -eq 39033) 'Repair response loss reconciles same pool identity on retry'
+
+    Reset-Fixture
+    $changed = Read-JsonFile "$runtime/status.json"
+    $changed.instanceId = 'restarted'
+    Write-JsonFileAtomic "$runtime/status.json" $changed
+    $blocked = $false
+    try { Assert-NineRouterSelectionUnchanged $runtime $script:status } catch { $blocked = $_.Exception.Message -eq 'sync-selection-changed' }
+    Assert-True $blocked 'Old Broker instance cannot continue sync mutations'
+
+    Reset-Fixture
+    $script:status.exits[0].port = 39033
+    $script:status.exits[0].nodeHash = 'distinct'
+    $script:pools[1].name = 'vpncheap-TW-Test'
+    Write-JsonFileAtomic "$runtime/status.json" $script:status
+    $plan = @(Get-OwnedNineRouterPlan -Status $script:status -Pools $script:pools -Ledger (Read-JsonFile "$runtime/9router-applied.json"))
+    Assert-True ($plan.Count -eq 1 -and $plan[0].action -eq 'create' -and $plan[0].name -match 'distinct$') 'same-name historical pool does not block an independent exit'
+
     Reset-Fixture
     Write-JsonFileAtomic "$runtime/9router-sync-config.json" $null
     $result = Invoke-NineRouterSync $runtime

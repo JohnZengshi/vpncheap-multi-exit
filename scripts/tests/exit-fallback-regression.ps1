@@ -129,7 +129,7 @@ try {
         Write-ProtectedSubscriptionFile (Join-Path $runtime 'catalog.dpapi.json') @{ nodes = @((New-Node 1), $backup) }
         $candidates = @(Get-CandidateNodes)
         Assert-Test (@($candidates | Where-Object NodeHash -eq $slot).Count -eq 1) 'Protocol filter retired a working fallback slot.'
-        Assert-Test ($candidates[0].Protocol -eq 'anytls') 'Broker hid the actual backup protocol.'
+        Assert-Test ($candidates[0].Protocol -eq 'hysteria2' -and $candidates[0].ConfiguredNodeName -eq (New-Node 1).name) 'Candidate lost its configured identity.'
         Write-Host 'PASS sticky fallback survives snapshots and broker protocol filters'
 
         $ast = [Management.Automation.Language.Parser]::ParseFile("$root/scripts/worker.ps1", [ref]$tokens, [ref]$errors)

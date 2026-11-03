@@ -68,17 +68,18 @@ function Get-DashboardPoolPlan {
     param(
         [AllowNull()] [object]$Status,
         [AllowEmptyCollection()] [object[]]$Pools,
-        [AllowEmptyCollection()] [object[]]$Connections
+        [AllowEmptyCollection()] [object[]]$Connections,
+        [AllowNull()] [object]$Ledger = $null
     )
 
     if ($null -eq $Status) { return @() }
     try {
-        $plan = New-NineRouterPlan -Status $Status -Pools @($Pools) -Connections @($Connections)
+        $plan = @(Get-OwnedNineRouterPlan -Status $Status -Pools @($Pools) -Ledger $Ledger)
     }
     catch {
         return @()
     }
-    return @($plan.Pools | ForEach-Object {
+    return @($plan | ForEach-Object {
         [ordered]@{
             name = [string]$_.name
             port = [int]$_.port
@@ -125,106 +126,15 @@ function Invoke-CreateNineRouterPools {
         return @{ code = 502; body = [ordered]@{ error = 'nine-router-unavailable' } }
     }
 
-    $plan = New-NineRouterPlan -Status $status -Pools $pools -Connections $connections
-    $planByPort = @{}
-    foreach ($item in @($plan.Pools)) { $planByPort[[int]$item.port] = $item }
-
+    $ledger = Read-JsonFile $ledgerPath
+    $plan = @(Get-OwnedNineRouterPlan -Status $status -Pools $pools -Ledger $ledger)
     foreach ($port in $requestedPorts) {
-        if (-not $planByPort.ContainsKey($port)) {
-            return @{ code = 409; body = [ordered]@{ error = 'exit-not-healthy'; port = $port } }
-        }
-        if ($planByPort[$port].action -eq 'conflict') {
-            return @{ code = 409; body = [ordered]@{ error = 'pool-conflict'; port = $port; reason = [string]$planByPort[$port].conflictReason } }
-        }
+        $item = @($plan | Where-Object port -eq $port)
+        if ($item.Count -ne 1) { return @{ code = 409; body = @{ error = 'exit-not-healthy'; port = $port } } }
+        if ($item[0].action -eq 'conflict') { return @{ code = 409; body = @{ error = 'pool-conflict'; port = $port; reason = $item[0].conflictReason } } }
     }
-
-    $ledger = Read-JsonFile -Path $ledgerPath
-    $ledgerPools = New-Object System.Collections.Generic.List[object]
-    $ledgerPoolUpdates = New-Object System.Collections.Generic.List[object]
-    $ledgerBindings = New-Object System.Collections.Generic.List[object]
-    if ($null -ne $ledger) {
-        foreach ($item in @(Get-OptionalProperty -Object $ledger -Name 'pools')) { if ($null -ne $item) { $ledgerPools.Add($item) } }
-        foreach ($item in @(Get-OptionalProperty -Object $ledger -Name 'poolUpdates')) { if ($null -ne $item) { $ledgerPoolUpdates.Add($item) } }
-        foreach ($item in @(Get-OptionalProperty -Object $ledger -Name 'bindings')) { if ($null -ne $item) { $ledgerBindings.Add($item) } }
-    }
-
-    $results = New-Object System.Collections.Generic.List[object]
-    $ledgerChanged = $false
-    foreach ($port in @($requestedPorts | Sort-Object)) {
-        $item = $planByPort[$port]
-        $result = [ordered]@{
-            name = [string]$item.name
-            port = $port
-            action = [string]$item.action
-            poolId = [string]$item.existingPoolId
-            testStatus = $null
-            error = $null
-        }
-        try {
-            if ($item.action -eq 'create') {
-                $pool = New-NineRouterPool -Client $client -Name ([string]$item.name) -ProxyUrl ('http://127.0.0.1:{0}' -f $port)
-                $result.poolId = [string]$pool.id
-                $ledgerPools.Add([ordered]@{
-                    name = [string]$item.name
-                    poolId = [string]$pool.id
-                    port = $port
-                    nodeHash = [string]$item.nodeHash
-                    createdAt = (Get-Date).ToUniversalTime().ToString('o')
-                })
-                $ledgerChanged = $true
-                Write-DashboardLog ('pool-create port={0} id={1}' -f $port, $pool.id)
-            }
-            elseif ($item.action -eq 'update') {
-                Set-NineRouterPool -Client $client -PoolId ([string]$item.existingPoolId) -StrictProxy $true -IsActive $true | Out-Null
-                $ledgerPoolUpdates.Add([ordered]@{
-                    name = [string]$item.name
-                    poolId = [string]$item.existingPoolId
-                    port = $port
-                    nodeHash = [string]$item.nodeHash
-                    previousStrictProxy = [bool]$item.currentStrictProxy
-                    previousIsActive = [bool]$item.currentIsActive
-                    updatedAt = (Get-Date).ToUniversalTime().ToString('o')
-                })
-                $ledgerChanged = $true
-                Write-DashboardLog ('pool-update port={0} id={1}' -f $port, $item.existingPoolId)
-            }
-
-            if (-not [string]::IsNullOrWhiteSpace([string]$result.poolId)) {
-                try {
-                    $result.testStatus = Get-PoolTestStatus -Result (Test-NineRouterPool -Client $client -PoolId ([string]$result.poolId))
-                }
-                catch {
-                    $result.testStatus = 'request-error'
-                }
-            }
-        }
-        catch {
-            $result.error = 'request-failed'
-            Write-DashboardLog ('pool-create-failed port={0}' -f $port)
-        }
-        $results.Add($result)
-    }
-
-    if ($ledgerChanged) {
-        Write-JsonFileAtomic -Path $ledgerPath -Value ([ordered]@{
-            schemaVersion = 1
-            kind = 'vpncheap-9router-ledger'
-            updatedAt = (Get-Date).ToUniversalTime().ToString('o')
-            pools = $ledgerPools.ToArray()
-            poolUpdates = $ledgerPoolUpdates.ToArray()
-            bindings = $ledgerBindings.ToArray()
-        })
-    }
-
+    $result = Invoke-NineRouterSync -RuntimeDirectory $runtimeDirectory -Ports @($requestedPorts) -NoCleanup
     $script:nineRouterCache = $null
     $script:nineRouterCacheAt = [datetime]::MinValue
-
-    $failed = @($results | Where-Object { $null -ne $_.error }).Count
-    return @{
-        code = 200
-        body = [ordered]@{
-            ok = ($failed -eq 0)
-            results = $results.ToArray()
-        }
-    }
+    return @{ code = 200; body = @{ ok = $result.state -eq 'completed'; results = $result.actions; state = $result.state } }
 }

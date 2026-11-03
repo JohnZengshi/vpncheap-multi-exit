@@ -28,6 +28,16 @@ function New-TestNode([string]$Id, [string]$Name = 'HK-01-UDP', [string]$Address
     }
 }
 try {
+    Run-Test 'Fallback snapshot preserves the configured node across updates' {
+        $slot = '1234567890abcdef'
+        $primary = New-TestNode primary 'configured'
+        Save-ExitNodeSnapshot $testDirectory $slot $primary
+        Save-ExitNodeSnapshot $testDirectory $slot (New-TestNode backup 'actual') -FallbackActive $true
+        Save-ExitNodeSnapshot $testDirectory $slot (New-TestNode backup2 'actual-2')
+        $saved = Read-ProtectedSubscriptionFile (Get-ExitSnapshotPath $testDirectory $slot)
+        Assert-Test ($saved.configuredNode.name -eq 'configured') 'Configured identity overwritten by backup.'
+        Assert-Test ($saved.node.name -eq 'actual-2' -and $saved.fallbackActive) 'Actual backup lost.'
+    }
     Run-Test 'Valid catalog accepted; empty, duplicate and sentinel catalogs rejected' {
         $node = New-TestNode a
         Assert-VpnCheapSubscriptionCatalog @($node)
@@ -58,10 +68,10 @@ try {
         $new = New-TestNode b new-name
         Assert-Test ((Resolve-ExitNodeReplacement $old @($new)).id -eq 'b') 'Endpoint migration lost.'
     }
-    Run-Test 'Address change resolved by normalized exact name' {
+    Run-Test 'Same name cannot authorize changed source and endpoint' {
         $old = New-TestNode a 'HK-01-UDP'
         $new = New-TestNode b 'HK-1-UDP' '192.0.2.2'
-        Assert-Test ((Resolve-ExitNodeReplacement $old @($new)).id -eq 'b') 'Normalized name was not used.'
+        Assert-Test ($null -eq (Resolve-ExitNodeReplacement $old @($new))) 'Name silently transferred identity.'
     }
     Run-Test 'No region-only guessing, protocol switching or ambiguous matching' {
         $old = New-TestNode a 'HK-01-UDP'

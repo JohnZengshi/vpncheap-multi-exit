@@ -36,6 +36,8 @@ Set-StrictMode -Version Latest
 . "$PSScriptRoot\lib\vpncheap-state.ps1"
 . "$PSScriptRoot\lib\broker-common.ps1"
 . "$PSScriptRoot\lib\subscription-state.ps1"
+. "$PSScriptRoot\lib\9router.ps1"
+. "$PSScriptRoot\lib\exit-control.ps1"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($RuntimeDirectory)) {
@@ -53,6 +55,7 @@ $supervisorStopPath = Join-Path $RuntimeDirectory 'stop.supervisor'
 $leasePath = Join-Path $RuntimeDirectory 'port-leases.json'
 $exitConfigPath = Join-Path $RuntimeDirectory 'exit-config.json'
 $brokerLogPath = Join-Path $logDirectory 'broker.log'
+$script:configFailure = $null
 
 function Write-BrokerLog {
     param(
@@ -74,78 +77,7 @@ function Ensure-RuntimeDirectories {
 function Get-CandidateNodes {
     $nodes = @(Get-SubscriptionNodes -RuntimeDirectory $RuntimeDirectory -StatePath $StatePath -AssemblyPath $ManagedAssemblyPath)
     if ($nodes.Count -eq 0) { throw 'subscription-empty-catalog' }
-    $result = New-Object System.Collections.Generic.List[object]
-    $seen = New-Object 'System.Collections.Generic.HashSet[string]'
-    $claimed = New-Object 'System.Collections.Generic.HashSet[string]'
-    foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $RuntimeDirectory 'nodes') -Filter '*.dpapi.json' -ErrorAction SilentlyContinue)) {
-        $slotHash = $file.Name -replace '\.dpapi\.json$', ''
-        $saved = Read-ProtectedSubscriptionFile $file.FullName
-        $replacement = Resolve-ExitNodeReplacement -Previous $saved.node -Nodes $nodes
-        $node = if ($null -ne $replacement) { $replacement } else { $saved.node }
-        $nodeProtocol = [string](Get-JsonProperty $node 'protocol')
-        $nodeCountry = [string](Get-JsonProperty $node 'country_code')
-        $fallbackActive = [bool](Get-OptionalProperty $saved 'fallbackActive')
-        if (($Protocol -and $nodeProtocol -ne $Protocol -and -not $fallbackActive) -or
-            ($Country -and $nodeCountry -ne $Country)) { continue }
-        $seen.Add($slotHash) | Out-Null
-        if ($null -ne $replacement) { $claimed.Add((Get-ExitNodeIdentity $replacement).SourceHash) | Out-Null }
-        $result.Add([pscustomobject]@{
-            NodeHash = $slotHash; NodeName = [string](Get-JsonProperty $node 'name')
-            Protocol = $nodeProtocol; Country = $nodeCountry; NeedsReview = ($null -eq $replacement)
-        })
-    }
-    foreach ($node in $nodes) {
-            if (-not [bool](Get-JsonProperty -Object $node -Name 'online')) {
-                continue
-            }
-            if ($null -eq (Get-JsonProperty -Object $node -Name 'raw_outbound')) {
-                continue
-            }
-
-            $nodeProtocol = [string](Get-JsonProperty -Object $node -Name 'protocol')
-            if (-not [string]::IsNullOrWhiteSpace($Protocol) -and $nodeProtocol -ne $Protocol) {
-                continue
-            }
-
-            $nodeCountry = [string](Get-JsonProperty -Object $node -Name 'country_code')
-            if (-not [string]::IsNullOrWhiteSpace($Country) -and $nodeCountry -ne $Country) {
-                continue
-            }
-
-            $nodeId = [string](Get-JsonProperty -Object $node -Name 'id')
-            if ([string]::IsNullOrWhiteSpace($nodeId)) {
-                continue
-            }
-
-            $nodeHash = Get-StringSha256Short -Text $nodeId
-            if ($claimed.Contains($nodeHash) -or -not $seen.Add($nodeHash)) {
-                continue
-            }
-
-            $result.Add([pscustomobject]@{
-                NodeHash = $nodeHash
-                NodeName = [string](Get-JsonProperty -Object $node -Name 'name')
-                Protocol = $nodeProtocol
-                Country = $nodeCountry
-                NeedsReview = $false
-            })
-    }
-
-    # Retain legacy slots whose provider IDs disappeared before snapshots existed.
-    # Missing metadata is not permission to guess a replacement or retire its port.
-    $previousStatus = Read-JsonFile $statusPath
-    foreach ($exit in @(Get-OptionalProperty $previousStatus 'exits')) {
-        if ($null -eq $exit) { continue }
-        $hash = [string]$exit.nodeHash
-        if (($Protocol -and $exit.protocol -ne $Protocol) -or ($Country -and $exit.country -ne $Country)) { continue }
-        if ($seen.Add($hash)) {
-            $result.Add([pscustomobject]@{
-                NodeHash = $hash; NodeName = [string]$exit.nodeName
-                Protocol = [string]$exit.protocol; Country = [string]$exit.country; NeedsReview = $true
-            })
-        }
-    }
-    return @($result | Sort-Object -Property Country, NodeHash)
+    return @(Get-ExitCatalog -RuntimeDirectory $RuntimeDirectory -Nodes $nodes -Protocol $Protocol -Country $Country)
 }
 
 function Get-ExitConfig {
@@ -156,6 +88,7 @@ function Get-ExitConfig {
         return [pscustomobject]@{
             MaxExits = 0
             NodeHashes = @()
+            ConfigId = $null
         }
     }
 
@@ -178,6 +111,7 @@ function Get-ExitConfig {
     return [pscustomobject]@{
         MaxExits = $maxExits
         NodeHashes = @($hashes)
+        ConfigId = Get-OptionalProperty $document 'configId'
     }
 }
 
@@ -201,16 +135,8 @@ function Get-DesiredExits {
     if ($null -ne $Config) {
         $hashes = @($Config.NodeHashes)
     }
-    if ($hashes.Count -eq 0) {
-        return @($Candidates | Select-Object -First $limit)
-    }
-
-    $wanted = New-Object 'System.Collections.Generic.HashSet[string]'
-    foreach ($hash in $hashes) {
-        $wanted.Add([string]$hash) | Out-Null
-    }
-
-    return @($Candidates | Where-Object { $wanted.Contains([string]$_.NodeHash) } | Select-Object -First $limit)
+    $current = Read-JsonFile (Join-Path $RuntimeDirectory 'status.json')
+    return @(Get-ExitSelection -Candidates $Candidates -NodeHashes $hashes -MaxExits $limit -Exits @(Get-OptionalProperty $current 'exits'))
 }
 
 function Get-ExitConfigRevision {
@@ -626,6 +552,8 @@ function Write-BrokerStatus {
         $exitRows.Add([ordered]@{
             nodeHash = $hash
             nodeName = [string](Get-OptionalProperty -Object $exit -Name 'NodeName')
+            configuredNodeName = Get-OptionalProperty $exit 'ConfiguredNodeName'
+            configuredNodeHash = Get-OptionalProperty $exit 'ConfiguredNodeHash'
             protocol = if ($null -ne $workerStatus) { $workerStatus.protocol } else { $exit.Protocol }
             country = if ($null -ne $workerStatus) { $workerStatus.country } else { $exit.Country }
             port = if ($null -ne $workerStatus) {
@@ -694,6 +622,10 @@ function Write-BrokerStatus {
                 country = [string]$_.Country
                 selected = $desiredHashes.Contains([string]$_.NodeHash)
                 needsReview = [bool](Get-OptionalProperty $_ 'NeedsReview')
+                configuredNodeName = Get-OptionalProperty $_ 'ConfiguredNodeName'
+                configuredNodeHash = Get-OptionalProperty $_ 'ConfiguredNodeHash'
+                sourceNodeHash = Get-OptionalProperty $_ 'SourceNodeHash'
+                category = Get-OptionalProperty $_ 'Category'
             }
         })
     }
@@ -725,6 +657,8 @@ function Write-BrokerStatus {
         candidateCount = $candidateCount
         selectedCount = $selectedCount
         healthyCount = $healthyCount
+        appliedConfigId = Get-OptionalProperty $ExitConfig 'ConfigId'
+        configError = $script:configFailure
         refreshErrorHash = $RefreshErrorHash
         exits = $exitRows.ToArray()
         candidates = $candidateRows
@@ -749,6 +683,10 @@ function Invoke-BrokerRun {
     try {
         Invoke-BrokerRunCore
     }
+    catch {
+        Write-BrokerLog ('broker-error id={0} stack={1}' -f $_.FullyQualifiedErrorId, $_.ScriptStackTrace)
+        throw
+    }
     finally {
         # Keep the lock file: deleting it after release races the next owner.
         $runLock.Dispose()
@@ -757,7 +695,6 @@ function Invoke-BrokerRun {
 
 function Invoke-BrokerRunCore {
     Ensure-RuntimeDirectories
-    Stop-OrphanWorkers
 
     if (Test-Path -LiteralPath $supervisorStopPath) {
         Remove-Item -LiteralPath $supervisorStopPath -Force
@@ -776,6 +713,12 @@ function Invoke-BrokerRunCore {
     $exitConfig = Get-ExitConfig
     $lastExitConfigRevision = Get-ExitConfigRevision
     $desired = @(Get-DesiredExits -Candidates $candidates -Config $exitConfig)
+    # Validate pending removal before replacing workers left by a previous instance.
+    $previousStatus = Read-JsonFile $statusPath
+    if ($null -ne $previousStatus) {
+        Assert-ExitRemovalAllowed $RuntimeDirectory @($previousStatus.exits) $desired
+    }
+    Stop-OrphanWorkers
     $leaseState = Get-LeaseState
     $leases = $leaseState.Leases
     $retired = $leaseState.Retired
@@ -828,7 +771,11 @@ function Invoke-BrokerRunCore {
 
             $configRevision = Get-ExitConfigRevision
             if ($configRevision -ne $lastExitConfigRevision) {
+                $configLock = $null
                 try {
+                    $configLock = [IO.File]::Open((Join-Path $RuntimeDirectory 'exit-config.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+                    $configRevision = Get-ExitConfigRevision
+                    $candidates = @(Get-CandidateNodes)
                     $newExitConfig = Get-ExitConfig
                     $newDesired = @(Get-DesiredExits -Candidates $candidates -Config $newExitConfig)
                     $newDesiredHashes = New-Object 'System.Collections.Generic.HashSet[string]'
@@ -836,8 +783,13 @@ function Invoke-BrokerRunCore {
                         $newDesiredHashes.Add([string]$item.NodeHash) | Out-Null
                     }
 
+                    $currentStatus = Read-JsonFile $statusPath
+                    Assert-ExitRemovalAllowed $RuntimeDirectory @($currentStatus.exits) $newDesired
                     foreach ($hash in @($workers.Keys)) {
                         if (-not $newDesiredHashes.Contains([string]$hash)) {
+                            $freshConfig = Get-ExitConfigRevision
+                            if ($freshConfig -ne $configRevision) { throw 'config-selection-changed' }
+                            Assert-ExitRemovalAllowed $RuntimeDirectory @($currentStatus.exits) $newDesired
                             Stop-WorkerEntry -Worker $workers[$hash]
                             $workers.Remove($hash)
                         }
@@ -849,15 +801,21 @@ function Invoke-BrokerRunCore {
                     }
 
                     $exitConfig = $newExitConfig
+                    $script:configFailure = $null
                     $desired = $newDesired
                     Update-LeasesForDesired -Desired $desired -Leases $leases -Retired $retired
                     $lastExitConfigRevision = $configRevision
                     Write-BrokerLog -Message ("exit-config changed mode={0} max={1} selected={2}" -f $(if (@($exitConfig.NodeHashes).Count -gt 0) { 'manual' } else { 'auto' }), $exitConfig.MaxExits, $desired.Count)
                 }
                 catch {
-                    $lastExitConfigRevision = $configRevision
+                    if ($null -ne $configLock) { $lastExitConfigRevision = $configRevision }
+                    $reason = $_.Exception.Message
+                    $script:configFailure = @{ configId = Get-OptionalProperty (Read-JsonFile $exitConfigPath) 'configId'
+                        error = if ($reason -in @('exit-has-bindings', 'binding-check-unavailable', 'node-unavailable', 'unknown-node', 'config-selection-changed')) { $reason } else { 'exit-adjustment-failed' }
+                        affected = @($_.Exception.Data['affected'] | Where-Object { $null -ne $_ }) }
                     Write-BrokerLog -Message ("exit-config-error errorHash={0}" -f (Get-StringSha256Short -Text $_.Exception.Message -Length 20))
                 }
+                finally { if ($null -ne $configLock) { $configLock.Dispose() } }
             }
 
             $subscriptionRevision = Get-SubscriptionRevision

@@ -1529,7 +1529,7 @@ a {
     display: none;
   }
 
-  .switch-label {
+  .switch:not(.config-auto) .switch-label {
     display: none;
   }
 
@@ -1625,4 +1625,23 @@ a {
 .mini-btn:disabled {
   cursor: wait;
   opacity: 0.6;
+}
+.candidate-group {
+  padding: 9px 12px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border, #d5dfd8);
+}
+
+.mobile-exit-state {
+  display: none;
+}
+
+@media (max-width: 560px) {
+  .mobile-exit-state {
+    display: block;
+  }
+}
+.link-btn.configuration-retry {
+  width: auto;
+  padding: 5px 8px;
 }

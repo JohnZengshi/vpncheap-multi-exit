@@ -192,6 +192,7 @@
           <div class="section-title">
             <h2>出口节点</h2>
             <p id="exit-subtitle">本地回环入口 · 等待快照</p>
+            <div id="configuration-progress" role="status" aria-live="polite" hidden></div>
           </div>
           <div class="controls">
             <button class="link-btn" id="export-ips-btn" type="button" title="导出所选线路的 VPNCheap 服务器 IP 和端口" aria-label="导出所选线路的 VPNCheap 服务器 IP 和端口">
@@ -202,7 +203,7 @@
               <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
               <span id="export-direct-label">导出 DIRECT 规则</span>
             </button>
-            <button class="link-btn" id="config-btn" type="button">
+            <button class="link-btn" id="config-btn" type="button" aria-label="配置出口">
               <svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>
               <span>配置出口</span>
             </button>

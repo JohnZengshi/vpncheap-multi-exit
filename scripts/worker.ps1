@@ -89,6 +89,9 @@ $script:status = [ordered]@{
     fallbackActive = $false
     activeNodeHash = $null
     activeNodeName = $null
+    configuredNodeHash = $null
+    configuredNodeName = $null
+    needsReview = $false
     serverAddress = $null
     serverPort = $null
 }
@@ -334,12 +337,19 @@ try {
             }
         }
         if ($serviceId -eq [UIntPtr]::Zero) { continue }
+        $snapshot = $null
+        try { $snapshot = Read-ProtectedSubscriptionFile (Get-ExitSnapshotPath $RuntimeDirectory $NodeHash) } catch { }
+        $configured = Get-OptionalProperty $snapshot 'configuredNode'
+        if ($null -eq $configured -and -not $nodeInfo.FallbackActive) { $configured = $nodeInfo.Node }
         Update-WorkerStatus @{
             protocol = $nodeInfo.Node.protocol
             country = $nodeInfo.Node.country_code
             fallbackActive = $nodeInfo.FallbackActive
             activeNodeHash = (Get-ExitNodeIdentity $nodeInfo.Node).SourceHash
             activeNodeName = $nodeInfo.Node.name
+            configuredNodeHash = if ($null -ne $configured) { (Get-ExitNodeIdentity $configured).SourceHash } else { $null }
+            configuredNodeName = if ($null -ne $configured) { $configured.name } else { $null }
+            needsReview = $null -eq $configured
             serverAddress = $nodeInfo.Node.address
             serverPort = $nodeInfo.Node.port
         }
