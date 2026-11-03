@@ -162,9 +162,9 @@
             <span class="stat-meta" id="stat-latency-meta">近期检查</span>
           </div>
           <div class="stat">
-            <span class="stat-label">代理池</span>
+            <span class="stat-label">当前对应池</span>
             <span class="stat-value" id="stat-pools">—</span>
-            <span class="stat-meta" id="stat-pools-meta">本工具托管</span>
+            <span class="stat-meta" id="stat-pools-meta">当前出口对应</span>
           </div>
           <div class="stat">
             <span class="stat-label">候选节点</span>
@@ -190,11 +190,20 @@
       <div class="wrap">
         <div class="section-head">
           <div class="section-title">
-            <h2>出口节点</h2>
+            <h2>出口与代理池</h2>
             <p id="exit-subtitle">本地回环入口 · 等待快照</p>
+            <p class="section-note">每行对应一个当前出口。线路状态表示能否访问网络，代理池状态表示 9Router 是否已对应此入口。</p>
             <div id="configuration-progress" role="status" aria-live="polite" hidden></div>
           </div>
           <div class="controls">
+            <button class="link-btn sync-action" id="pool-sync" type="button" title="同步代理池" aria-label="同步代理池">
+              <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>
+              <span>同步代理池</span>
+            </button>
+            <button class="link-btn" id="pool-create-all" type="button" hidden>
+              <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+              <span id="pool-create-all-label">创建代理池</span>
+            </button>
             <button class="link-btn" id="export-ips-btn" type="button" title="导出所选线路的 VPNCheap 服务器 IP 和端口" aria-label="导出所选线路的 VPNCheap 服务器 IP 和端口">
               <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
               <span id="export-ips-label">导出服务器</span>
@@ -230,15 +239,11 @@
             <table class="exit-table" aria-label="出口节点状态">
               <thead>
                 <tr>
-                  <th scope="col">节点</th>
-                  <th scope="col">入口</th>
-                  <th scope="col">地区 / 协议</th>
-                  <th scope="col">状态</th>
-                  <th scope="col">HTTP</th>
-                  <th scope="col">延迟</th>
-                  <th scope="col">出口 IP 哈希</th>
-                  <th scope="col">Worker</th>
-                  <th scope="col">最近检查</th>
+                  <th scope="col">出口与本地入口</th>
+                  <th scope="col">线路状态</th>
+                  <th scope="col">代理池与同步</th>
+                  <th scope="col">绑定账号</th>
+                  <th scope="col">运行详情</th>
                 </tr>
               </thead>
               <tbody id="exit-body"></tbody>
@@ -257,17 +262,11 @@
         <section class="panel stack-panel">
           <header class="panel-head">
             <div class="section-title">
-              <h3>9Router 代理池</h3>
+              <h3>历史与其他代理池</h3>
               <p id="pool-subtitle">读取中</p>
+              <p class="section-note">当前出口的代理池已合并到上表；此处只列历史保留、外部管理或待核对的池。</p>
             </div>
             <div class="head-actions">
-              <button class="icon-btn" id="pool-sync" type="button" title="同步代理池" aria-label="同步代理池">
-                <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>
-              </button>
-              <button class="link-btn" id="pool-create-all" type="button" hidden>
-                <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
-                <span id="pool-create-all-label">创建代理池</span>
-              </button>
               <a class="icon-btn" href="http://localhost:20128/dashboard/proxy-pools" target="_blank" rel="noreferrer" title="打开代理池" aria-label="打开代理池">
                 <svg class="icon" aria-hidden="true"><use href="#i-external"/></svg>
               </a>
@@ -276,14 +275,14 @@
           <div class="rows" id="pool-list"></div>
           <div class="empty small" id="pool-empty" hidden>
             <svg class="icon empty-icon" aria-hidden="true"><use href="#i-database"/></svg>
-            <span>没有代理池数据</span>
+            <span id="pool-empty-text">暂无历史或其他代理池</span>
           </div>
         </section>
 
         <section class="panel stack-panel">
           <header class="panel-head">
             <div class="section-title">
-              <h3>Provider 路由</h3>
+              <h3>账号路由</h3>
               <p id="connection-subtitle">读取中</p>
             </div>
             <a class="icon-btn" href="http://localhost:20128/dashboard/providers" target="_blank" rel="noreferrer" title="打开 Providers" aria-label="打开 Providers">

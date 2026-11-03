@@ -13,12 +13,20 @@ for (const viewport of [{ width: 1440, height: 960 }, { width: 390, height: 844 
     expect(response.ok()).toBeTruthy();
     const snapshot = await response.json();
     const table = page.getByRole('table', { name: '出口节点状态', exact: true });
+    await expect(page.getByRole('heading', { name: '出口与代理池', exact: true })).toBeVisible();
     await expect(table.getByRole('row')).toHaveCount(snapshot.exits.length + 1);
     for (const exit of snapshot.exits) {
       const row = table.getByRole('row').filter({ hasText: exit.nodeHash });
       await expect(row).toContainText(exit.configuredNodeName || '原配置待核对');
       await expect(row).toContainText(`实际：${exit.activeNodeName || '待确认'}`);
+      await expect(row.getByText(exit.endpoint || `127.0.0.1:${exit.port}`, { exact: true })).toBeVisible();
+      if (exit.poolState === 'matched') {
+        await expect(row).toContainText('入口已同步');
+        await expect(row.getByText(exit.poolName, { exact: true })).toBeVisible();
+        await expect(page.locator('#pool-list').getByText(exit.poolName, { exact: true })).toHaveCount(0);
+      }
     }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     for (const pool of snapshot.pools.filter(pool => pool.relationState === 'historical')) {
       await expect(page.getByText(pool.name, { exact: true }).first()).toBeVisible();
     }

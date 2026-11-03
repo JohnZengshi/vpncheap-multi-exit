@@ -61,6 +61,7 @@ const ui = {
   query: '',
   auto: readAutoPreference(),
   history: new Map(),
+  expandedExits: new Set(),
   timer: null,
   inflight: false,
   fetchedAt: null,
@@ -577,39 +578,67 @@ function poolCreateButton(port) {
   return button;
 }
 
-function buildExitRow(exit, poolPorts) {
+function currentPool(exit) {
+  return ((ui.data && ui.data.pools) || []).find(pool => exit.poolId && pool.id === exit.poolId);
+}
+
+function poolBindings(pool) {
+  return ((ui.data && ui.data.connections) || []).filter(connection => pool && connection.poolId === pool.id);
+}
+
+function buildPoolCell(exit, pool) {
+  const cell = make('td', 'cell-pool');
+  cell.dataset.label = '代理池与同步';
+  const ready = exitTone(exit) === 'ok';
+  const unavailable = ((ui.data && ui.data.warnings) || []).includes('nine-router-unavailable');
+  const plan = poolPlanByPort().get(Number(exit.port));
+  if (unavailable) {
+    cell.appendChild(statusLine('warn', '无法核对代理池'));
+    cell.appendChild(cellSub('9Router 接口不可用，恢复后重新核对'));
+    return cell;
+  }
+  if (exit.poolState === 'conflict' || (pool && pool.relationState === 'conflict') || (plan && plan.action === 'conflict')) {
+    cell.appendChild(statusLine('bad', '对应冲突，待核对'));
+    cell.appendChild(cellSub('池归属或地址不一致，无法自动同步'));
+    if (pool) cell.appendChild(cellSub(pool.name));
+    return cell;
+  }
+  if (pool && exit.poolState === 'matched') {
+    cell.appendChild(statusLine(ready && pool.isActive && pool.testStatus === 'active' ? 'ok' : 'warn', '入口已同步'));
+    cell.appendChild(make('div', 'pool-name', pool.name || '未命名代理池'));
+    const tested = pool.testStatus === 'active' ? '池检测通过' : pool.testStatus === 'error' ? '池检测失败' : '池尚未通过检测';
+    cell.appendChild(cellSub(`${tested} · ${pool.lastTestedAt ? formatClock(pool.lastTestedAt) : '检测时间未记录'}`));
+    if (!pool.isActive) cell.appendChild(badge('代理池已停用', 'warn'));
+    if (!ready) cell.appendChild(make('div', 'relation-note', '入口已对应；线路未就绪，重复同步无法修复线路'));
+    return cell;
+  }
+  cell.appendChild(statusLine('warn', ready ? '待创建代理池' : '未建池，等待线路恢复'));
+  cell.appendChild(make('div', 'relation-note', ready
+    ? '当前入口尚无对应池，后台将自动同步'
+    : '当前入口尚无对应池；线路恢复后自动创建'));
+  if (plan && plan.action === 'create') cell.appendChild(poolCreateButton(Number(exit.port)));
+  return cell;
+}
+
+function buildExitRow(exit) {
   const tone = exitTone(exit);
   const row = make('tr');
   row.dataset.tone = tone;
+  const pool = currentPool(exit);
 
   const nodeCell = make('td', 'cell-node');
-  nodeCell.appendChild(make('div', 'node-name', `配置：${exit.configuredNodeName || '原配置待核对'}`));
+  nodeCell.dataset.label = '出口与本地入口';
+  nodeCell.appendChild(make('div', 'node-name', exit.configuredNodeName || exit.activeNodeName || exit.nodeName || '待确认节点'));
+  if (!exit.configuredNodeName) nodeCell.appendChild(cellSub('配置：原配置待核对'));
   nodeCell.appendChild(make('div', 'node-hash', exit.nodeHash || '—'));
   nodeCell.appendChild(cellSub(`实际：${exit.activeNodeName || '待确认'}${exit.fallbackActive ? ' · 备用' : ''}`));
-  nodeCell.appendChild(make('div', 'cell-sub mobile-exit-state', `出口状态：${exitStateLabel(exit)}`));
+  if (exit.needsReview) nodeCell.appendChild(cellSub('原配置身份待核对；池对应关系单独核验'));
   row.appendChild(nodeCell);
 
-  const endpointCell = make('td');
   const endpoint = exit.endpoint || (exit.port ? `127.0.0.1:${exit.port}` : '—');
-  endpointCell.appendChild(chip(endpoint, null, 'mono'));
-  if (poolPorts && Number(exit.port) > 0 && (exit.poolState ? exit.poolState !== 'matched' : !poolPorts.has(Number(exit.port)))) {
-    const line = make('div', 'pool-missing');
-    line.appendChild(badge('无代理池', 'warn'));
-    const planItem = poolPlanByPort().get(Number(exit.port));
-    if (planItem && planItem.action === 'create') {
-      line.appendChild(poolCreateButton(Number(exit.port)));
-    } else if (planItem && planItem.action === 'conflict') {
-      line.appendChild(badge('对应冲突，待核对', 'bad'));
-      line.title = planItem.conflictReason || '';
-    }
-    endpointCell.appendChild(line);
-    if (!exit.healthOk) endpointCell.appendChild(cellSub('出口未就绪，恢复后自动同步池'));
-  }
-  endpointCell.appendChild(cellSub('mixed 入口'));
-  if (exit.poolName) endpointCell.appendChild(cellSub(`池：${exit.poolName}`));
-  row.appendChild(endpointCell);
+  nodeCell.appendChild(chip(endpoint, null, 'mono exit-endpoint'));
 
-  const regionCell = make('td');
+  const regionCell = make('div');
   const region = make('div', 'region');
   region.appendChild(make('span', 'region-code', exit.country || '—'));
   region.appendChild(make('span', 'region-protocol', exit.protocol || '未知协议'));
@@ -620,13 +649,10 @@ function buildExitRow(exit, poolPorts) {
   if (exit.serverAddress && exit.serverPort) {
     regionCell.appendChild(cellSub(`${exit.serverAddress}:${exit.serverPort}`));
   }
-  row.appendChild(regionCell);
 
-  const statusCell = make('td');
-  statusCell.appendChild(statusLine(tone, exitStateLabel(exit)));
-  if (exit.needsReview) {
-    statusCell.appendChild(cellSub('待核对映射'));
-  }
+  const statusCell = make('td', 'cell-health');
+  statusCell.dataset.label = '线路状态';
+  statusCell.appendChild(statusLine(tone, tone === 'ok' ? '线路可用' : `线路${exitStateLabel(exit)}`));
   if (exit.recoveryState) {
     const recoveryLabels = {
       scheduled: '等待恢复验证',
@@ -651,29 +677,45 @@ function buildExitRow(exit, poolPorts) {
   }
   row.appendChild(statusCell);
 
-  const httpCell = make('td');
+  const httpCell = make('div');
   const httpStatus = String(exit.httpStatus || '');
   const httpTone = httpStatus === '204' ? 'accent' : httpStatus ? 'warn' : null;
   httpCell.appendChild(chip(httpStatus || '—', httpTone, 'mono'));
-  row.appendChild(httpCell);
+  httpCell.prepend(make('span', 'detail-label', 'HTTP 检测 '));
 
-  const latencyCell = make('td');
   const latencyBox = make('div', 'latency');
   const history = ui.history.get(exit.nodeHash) || [];
   latencyBox.appendChild(sparkline(history, tone));
   const latency = Number(exit.latencyMs);
   latencyBox.appendChild(make('span', 'latency-value', Number.isFinite(latency) && latency > 0 ? `${Math.round(latency)} ms` : '—'));
-  latencyCell.appendChild(latencyBox);
-  row.appendChild(latencyCell);
+  statusCell.appendChild(latencyBox);
+  statusCell.appendChild(cellSub(`线路检查 ${formatClock(exit.lastCheckAt)}`));
+  row.appendChild(buildPoolCell(exit, pool));
 
-  const hashCell = make('td');
+  const bindingCell = make('td', 'cell-bindings');
+  bindingCell.dataset.label = '绑定账号';
+  const bound = poolBindings(pool);
+  bound.forEach(connection => {
+    const binding = make('div', 'exit-binding');
+    binding.appendChild(make('span', 'provider-name', providerLabel(connection.provider)));
+    binding.appendChild(badge(connection.isActive ? '启用' : '停用', connection.isActive ? 'ok' : null));
+    bindingCell.appendChild(binding);
+  });
+  if (!bound.length) bindingCell.appendChild(cellSub(pool && Number(pool.boundConnectionCount) > 0
+    ? `${pool.boundConnectionCount} 个绑定，账号信息待核对`
+    : ((ui.data && ui.data.warnings) || []).includes('nine-router-unavailable') ? '绑定信息待核对' : '未绑定账号'));
+  if (bound.length) bindingCell.appendChild(cellSub('含停用账号，取消出口前需先解除绑定'));
+  row.appendChild(bindingCell);
+
+  const hashCell = make('div');
+  hashCell.appendChild(make('div', 'detail-label', '出口 IP 哈希'));
   hashCell.appendChild(buildHashCell(exit.exitIpHash));
   if (exit.healthOk && exit.exitIpOk === false) {
     hashCell.appendChild(cellSub('IP 查询暂不可用'));
   }
-  row.appendChild(hashCell);
 
-  const workerCell = make('td');
+  const workerCell = make('div');
+  workerCell.appendChild(make('div', 'detail-label', 'Worker'));
   workerCell.appendChild(make('div', 'pid', exit.workerPid ? `PID ${exit.workerPid}` : '—'));
   const workerMeta = [];
   if (exit.singBoxVersion) {
@@ -711,15 +753,27 @@ function buildExitRow(exit, poolPorts) {
     feedback.title = exit.updateErrorHash || '';
     workerCell.appendChild(feedback);
   }
-  row.appendChild(workerCell);
 
-  const checkCell = make('td');
+  const checkCell = make('div');
+  checkCell.appendChild(make('div', 'detail-label', '最近线路检查'));
   checkCell.appendChild(make('div', 'pid', formatClock(exit.lastCheckAt)));
   const relative = formatRelative(exit.lastCheckAt);
   if (relative) {
     checkCell.appendChild(cellSub(relative));
   }
-  row.appendChild(checkCell);
+  const detailCell = make('td', 'cell-details');
+  detailCell.dataset.label = '运行详情';
+  const details = make('details', 'exit-details');
+  details.open = ui.expandedExits.has(exit.nodeHash);
+  details.addEventListener('toggle', () => {
+    if (!details.isConnected) return;
+    if (details.open) ui.expandedExits.add(exit.nodeHash);
+    else ui.expandedExits.delete(exit.nodeHash);
+  });
+  details.appendChild(make('summary', null, '查看详情'));
+  details.append(regionCell, httpCell, hashCell, workerCell, checkCell);
+  detailCell.appendChild(details);
+  row.appendChild(detailCell);
 
   return row;
 }
@@ -750,6 +804,10 @@ function exitMatches(exit) {
   }
   const haystack = [
     exit.nodeName,
+    exit.configuredNodeName,
+    exit.activeNodeName,
+    exit.poolName,
+    ...poolBindings(currentPool(exit)).map(connection => providerLabel(connection.provider)),
     exit.nodeHash,
     exit.country,
     exit.protocol,
@@ -761,11 +819,6 @@ function exitMatches(exit) {
 
 function renderExits() {
   const exits = (ui.data && Array.isArray(ui.data.exits)) ? ui.data.exits : [];
-  const warnings = (ui.data && Array.isArray(ui.data.warnings)) ? ui.data.warnings : [];
-  const pools = (ui.data && Array.isArray(ui.data.pools)) ? ui.data.pools : [];
-  const poolPorts = warnings.includes('nine-router-unavailable')
-    ? null
-    : new Set(pools.map((pool) => Number(pool.port)).filter((port) => Number.isFinite(port) && port > 0));
   const healthy = exits.filter((exit) => exitTone(exit) === 'ok').length;
   const bad = exits.length - healthy;
 
@@ -773,12 +826,12 @@ function renderExits() {
   setText('count-healthy', String(healthy));
   setText('count-bad', String(bad));
   setText('exit-subtitle', exits.length
-    ? `${exits.length} 个出口 · ${healthy} 个健康 · 本机回环`
+    ? `${exits.length} 个当前出口 · ${healthy} 条线路可用 · ${exits.filter(exit => exit.poolState === 'matched').length} 个代理池已同步`
     : '本地回环入口 · 暂无出口');
 
   const visible = exits.filter(exitMatches);
   const body = byId('exit-body');
-  body.replaceChildren(...visible.map((exit) => buildExitRow(exit, poolPorts)));
+  body.replaceChildren(...visible.map((exit) => buildExitRow(exit)));
 
   const empty = byId('exit-empty');
   const emptyText = byId('exit-empty-text');
@@ -995,7 +1048,7 @@ function renderStats() {
     ['stat-healthy', 'stat-latency', 'stat-pools', 'stat-candidates', 'stat-uptime'].forEach((id) => setText(id, '—'));
     setText('stat-healthy-meta', ui.error ? '服务不可达' : '读取中');
     setText('stat-latency-meta', '近期检查');
-    setText('stat-pools-meta', '本工具托管');
+    setText('stat-pools-meta', '当前出口对应');
     setText('stat-candidates-meta', '节点目录');
     setText('stat-uptime-meta', 'Broker');
     return;
@@ -1027,9 +1080,10 @@ function renderStats() {
   }
 
   const pools = Array.isArray(data.pools) ? data.pools : [];
-  const managed = pools.filter((pool) => pool.managed).length;
-  setText('stat-pools', `${managed}/${pools.length}`);
-  setText('stat-pools-meta', `本工具托管 · 共 ${pools.length} 个`);
+  const matched = pools.filter(pool => pool.relationState === 'matched').length;
+  const unavailable = (data.warnings || []).includes('nine-router-unavailable');
+  setText('stat-pools', unavailable ? '待核对' : `${matched}/${exits.length}`);
+  setText('stat-pools-meta', unavailable ? '9Router 接口不可用' : `另有 ${pools.length - matched} 个历史或其他池`);
 
   setText('stat-candidates', String(Number(broker.candidateCount) || 0));
   const scope = [
@@ -1146,7 +1200,8 @@ function renderTopbar() {
 
 function renderPools() {
   const data = ui.data;
-  const pools = (data && Array.isArray(data.pools)) ? data.pools.slice() : [];
+  const currentIds = new Set(((data && data.exits) || []).map(exit => exit.poolId).filter(Boolean));
+  const pools = ((data && data.pools) || []).filter(pool => !currentIds.has(pool.id));
   const connections = (data && Array.isArray(data.connections)) ? data.connections : [];
   const list = byId('pool-list');
   const empty = byId('pool-empty');
@@ -1154,6 +1209,7 @@ function renderPools() {
   if (!data) {
     setText('pool-subtitle', ui.error ? '服务不可达' : '读取中');
     list.replaceChildren();
+    setText('pool-empty-text', ui.error ? '无法读取代理池' : '正在读取代理池');
     empty.hidden = false;
     return;
   }
@@ -1164,9 +1220,12 @@ function renderPools() {
   createAll.disabled = Boolean(ui.poolBusy);
   setText('pool-create-all-label', ui.poolBusy ? '创建中' : `为 ${creatable.length} 个出口创建`);
 
-  const managed = pools.filter((pool) => pool.managed).length;
-  const passing = pools.filter((pool) => pool.testStatus === 'active').length;
-  setText('pool-subtitle', `${pools.length} 个代理池 · ${managed} 个托管 · ${passing} 个测试通过`);
+  const historical = pools.filter(pool => pool.relationState === 'historical').length;
+  const external = pools.filter(pool => pool.relationState === 'external').length;
+  const review = pools.length - historical - external;
+  setText('pool-subtitle', `${historical} 个历史保留 · ${external} 个外部管理 · ${review} 个待核对`);
+  const unavailable = (data.warnings || []).includes('nine-router-unavailable');
+  setText('pool-empty-text', unavailable ? '9Router 接口不可用，暂时无法核对' : '暂无历史或其他代理池；当前对应池见上表');
 
   pools.sort((left, right) => {
     if (Boolean(left.managed) !== Boolean(right.managed)) {
@@ -1185,11 +1244,11 @@ function renderPools() {
     const main = make('div');
     const title = make('div', 'pool-title');
     title.appendChild(make('strong', null, pool.name || '未命名代理池'));
-    title.appendChild(badge(pool.managed ? '本工具' : '原有', pool.managed ? 'accent' : null));
+    title.appendChild(badge(pool.managed ? '本工具托管' : '外部管理', pool.managed ? 'accent' : null));
     main.appendChild(title);
 
     const bound = connections.filter((connection) => connection.poolId === pool.id);
-    let boundText = '未绑定连接';
+    let boundText = '未绑定账号';
     if (bound.length) {
       const names = bound.slice(0, 3).map((connection) => providerLabel(connection.provider));
       boundText = `绑定 ${names.join('、')}${bound.length > 3 ? ` 等 ${bound.length} 个` : ''}`;
@@ -1199,7 +1258,7 @@ function renderPools() {
     main.appendChild(cellSub(boundText));
     if (pool.nodeHash) main.appendChild(cellSub(`出口 ${shortId(pool.nodeHash)}`));
     if (pool.reason) main.appendChild(cellSub(pool.reason));
-    if (pool.relationState === 'historical') main.appendChild(cellSub('历史入口的测试结果不代表当前出口健康'));
+    if (pool.relationState === 'historical') main.appendChild(make('div', 'relation-note', '未对应当前出口；保留原绑定，迁移需明确操作'));
     row.appendChild(main);
 
     const endpoint = make('div', 'endpoint-line');
@@ -1210,12 +1269,13 @@ function renderPools() {
 
     const badges = make('div', 'badge-row');
     const testTone = pool.testStatus === 'active' ? 'ok' : (pool.testStatus ? 'warn' : null);
-    badges.appendChild(badge(pool.testStatus === 'active' ? '测试通过' : (pool.testStatus || '未测试'), testTone));
+    badges.appendChild(badge(pool.testStatus === 'active' ? '上次池检测通过' : pool.testStatus === 'error' ? '上次池检测失败' : '尚未通过检测', testTone));
     if (pool.relationState === 'historical') badges.appendChild(badge('历史保留', 'warn'));
     if (pool.relationState === 'conflict') badges.appendChild(badge('对应冲突', 'bad'));
-    if (pool.relationState === 'matched') badges.appendChild(badge('已对应', 'ok'));
+    if (!['historical', 'external', 'conflict'].includes(pool.relationState)) badges.appendChild(badge('待核对', 'warn'));
     badges.title = `池检测：${pool.lastTestedAt ? formatClock(pool.lastTestedAt) : '时间未记录'}；出口健康单独显示`;
-    badges.appendChild(cellSub(`池检测 ${pool.lastTestedAt ? formatClock(pool.lastTestedAt) : '时间未记录'}`));
+    badges.appendChild(cellSub(`上次池检测 ${pool.lastTestedAt ? formatClock(pool.lastTestedAt) : '时间未记录'}`));
+    if (pool.relationState === 'historical') badges.appendChild(cellSub('不代表当前出口可用'));
     if (pool.strictProxy) {
       badges.appendChild(badge('strict', null));
     }
@@ -1243,7 +1303,7 @@ function renderConnections() {
   }
 
   const bound = connections.filter((connection) => connection.poolId);
-  setText('connection-subtitle', `${connections.length} 个连接 · ${bound.length} 个已绑定 · ${connections.length - bound.length} 个未绑定`);
+  setText('connection-subtitle', `${connections.length} 个账号连接 · ${bound.length} 个已绑定 · ${connections.length - bound.length} 个未绑定`);
 
   connections.sort((left, right) => {
     const leftBound = left.poolId ? 1 : 0;
@@ -1270,7 +1330,9 @@ function renderConnections() {
     const poolRef = make('div', `pool-ref${connection.poolId ? '' : ' is-unbound'}`, connection.poolId ? (connection.poolName || '已绑定') : '未绑定');
     if (connection.poolId) {
       poolRef.appendChild(cellSub([connection.endpoint, connection.activeNodeName].filter(Boolean).join(' · ') || '入口或实际节点待核对'));
-      poolRef.appendChild(cellSub(connection.routeState || '关系待核对'));
+      const pool = ((data && data.pools) || []).find(item => item.id === connection.poolId);
+      poolRef.appendChild(cellSub(pool && pool.relationState === 'historical'
+        ? '使用历史池，未迁移到当前出口' : connection.routeState || '关系待核对'));
     }
     row.appendChild(poolRef);
 
